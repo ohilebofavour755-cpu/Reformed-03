@@ -25,7 +25,8 @@ import { fx, setClubMix, initAudio, setMuted } from "@/game/audio";
 import { isMobileViewport } from "@/game/materials";
 import {
   cloneGlbTemplate,
-  getCachedGlb,
+  createCharacterAnimator,
+  getCachedGlbWithFallback,
   preloadAllCharacterGlbs,
   subscribeGlbRegistry,
   type GlbTemplate,
@@ -34,7 +35,6 @@ import { City } from "./City";
 import { Landmarks } from "./Landmarks";
 import { Lighting } from "./Lighting";
 import { Crowd } from "./Crowd";
-import { Humanoid } from "./Humanoid";
 import { Hud } from "./Hud";
 import { CharacterCreate } from "./CharacterCreate";
 import { Apartment } from "./Apartment";
@@ -357,32 +357,36 @@ function Stepper() {
 
 function GlbPlayerModel({ tpl }: { tpl: GlbTemplate }) {
   const innerRef = useRef<THREE.Group>(null);
-  const { root, mixer } = useMemo(() => {
+  const { root, animator } = useMemo(() => {
     const r = cloneGlbTemplate(tpl);
-    let m: THREE.AnimationMixer | null = null;
-    if (tpl.animations.length > 0) {
-      m = new THREE.AnimationMixer(r);
-      const clip = tpl.animations.find((c) => /walk|idle|run/i.test(c.name)) ?? tpl.animations[0];
-      if (clip) m.clipAction(clip).play();
-    }
-    return { root: r, mixer: m };
+    return { root: r, animator: createCharacterAnimator(r, tpl, 0) };
   }, [tpl]);
 
   useEffect(() => {
     return () => {
-      mixer?.stopAllAction();
+      animator.dispose();
     };
-  }, [mixer]);
+  }, [animator]);
 
   useFrame((_, raw) => {
     const p = rt.player;
-    if (mixer) mixer.update(Math.min(raw, 0.067) * (p.speed > 0.2 ? 1.2 : 0.7));
-    if (innerRef.current) {
-      const amp = Math.min(1, p.speed / 3.5);
-      const bob = Math.abs(Math.sin(p.phase)) * 0.045 * amp;
-      innerRef.current.position.y = bob;
-      innerRef.current.rotation.z = Math.sin(p.phase) * 0.04 * amp;
-      innerRef.current.rotation.x = p.act === "sleep" ? Math.PI / 2 : 0.04 * amp;
+    const dt = Math.min(raw, 0.067);
+    const intent = rt.driving
+      ? "sit"
+      : p.swim
+        ? "swim"
+        : p.act === "dance"
+          ? "dance"
+          : p.act === "sit"
+            ? "sit"
+            : p.speed > 4.6
+              ? "run"
+              : p.speed > 0.15
+                ? "walk"
+                : "idle";
+    animator.update(dt, p.phase, rt.t, p.speed, intent, innerRef.current);
+    if (innerRef.current && p.act === "sleep") {
+      innerRef.current.rotation.x = Math.PI / 2;
     }
   });
 
@@ -396,8 +400,7 @@ function GlbPlayerModel({ tpl }: { tpl: GlbTemplate }) {
 function Player() {
   const look = useGame((s) => s.previewLook ?? s.profile?.look ?? null);
   const gender = useGame((s) => s.profile?.gender ?? "female");
-  const tryOn = useGame((s) => s.tryOn);
-  const [, setVersion] = useState(0);
+  const [version, setVersion] = useState(0);
   useEffect(() => {
     preloadAllCharacterGlbs();
     return subscribeGlbRegistry(() => setVersion((v) => v + 1));
@@ -415,30 +418,10 @@ function Player() {
     g.current.position.set(p.x, p.y + riderLift, p.z);
     g.current.rotation.set(p.swim ? 1.35 : 0, p.heading, 0, "YXZ");
   });
+  void version;
   if (!look) return null;
-  const glbTpl = !tryOn ? getCachedGlb(gender === "male" ? "maleplayer" : "fplayer") : null;
-  return (
-    <group ref={g}>
-      {glbTpl ? (
-        <GlbPlayerModel tpl={glbTpl} />
-      ) : (
-        <Humanoid
-          look={look}
-          female={gender === "female"}
-          getPose={() => {
-            const p = rt.player;
-            return {
-              phase: p.phase,
-              amp: Math.min(1.2, p.speed / 3.5),
-              t: rt.t,
-              mode: rt.driving ? "sit" : p.swim ? "swim" : (p.act ?? "walk"),
-              talking: Date.now() < p.talkUntil,
-            };
-          }}
-        />
-      )}
-    </group>
-  );
+  const glbTpl = getCachedGlbWithFallback(gender === "male" ? "maleplayer" : "fplayer");
+  return <group ref={g}>{glbTpl && <GlbPlayerModel tpl={glbTpl} />}</group>;
 }
 
 function World() {

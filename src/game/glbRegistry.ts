@@ -12,19 +12,20 @@ export type GlbRoleKey =
   | "beachmale"
   | "beach"
   | "trampoline"
-  | "bicycle";
+  | "bicyclenpc";
 
-const CANDIDATE_NAMES: Record<GlbRoleKey, string[]> = {
-  maleplayer: ["Maleplayer.glb", "maleplayer.glb"],
-  fplayer: ["Fplayer.glb", "fplayer.glb"],
-  police: ["Police.glb", "police.glb"],
-  mannpc: ["Mannpc.glb", "mannpc.glb"],
-  femalenpc: ["Femalenpc.glb", "femalenpc.glb"],
-  ch: ["C&h.glb", "c&h.glb"],
-  beachmale: ["Beachmale.glb", "beachmale.glb"],
-  beach: ["Beach.glb", "beach.glb"],
-  trampoline: ["trampoline.glb", "Trampoline.glb"],
-  bicycle: ["bicycle.glb", "Bicycle.glb"],
+// Serve all 10 .glb files directly from public/
+export const GLB_PUBLIC_URLS: Record<GlbRoleKey, string[]> = {
+  maleplayer: ["/Maleplayer.glb"],
+  fplayer: ["/Fplayer.glb"],
+  police: ["/police.glb", "/Police.glb"],
+  mannpc: ["/Mannpc.glb"],
+  femalenpc: ["/Femalenpc.glb"],
+  ch: ["/C%26h.glb", "/C&h.glb"],
+  beachmale: ["/Beachmale.glb"],
+  beach: ["/Beach.glb"],
+  trampoline: ["/trampoline.glb"],
+  bicyclenpc: ["/bicyclenpc.glb"],
 };
 
 const TARGET_HEIGHT: Record<GlbRoleKey, number> = {
@@ -37,53 +38,25 @@ const TARGET_HEIGHT: Record<GlbRoleKey, number> = {
   beachmale: 1.74,
   beach: 1.68,
   trampoline: 2.15,
-  bicycle: 1.08,
+  bicyclenpc: 1.55,
 };
 
-const rootGlbs = import.meta.glob<string>("/*.glb", {
-  eager: true,
-  query: "?url",
-  import: "default",
-});
-
-const modelsGlbs = import.meta.glob<string>("/models/*.glb", {
-  eager: true,
-  query: "?url",
-  import: "default",
-});
-
-const assetPointers = import.meta.glob<{ default: { url: string; original_filename?: string } }>(
-  "../assets/models/*.asset.json",
-  { eager: true },
-);
-
-const bundledByLowerName = new Map<string, string>();
-for (const [path, url] of Object.entries(rootGlbs)) {
-  const base = path.split("/").pop();
-  if (base && typeof url === "string") bundledByLowerName.set(base.toLowerCase(), url);
-}
-for (const [path, url] of Object.entries(modelsGlbs)) {
-  const base = path.split("/").pop();
-  if (base && typeof url === "string" && !bundledByLowerName.has(base.toLowerCase())) {
-    bundledByLowerName.set(base.toLowerCase(), url);
-  }
-}
-for (const [path, mod] of Object.entries(assetPointers)) {
-  const url = mod?.default?.url;
-  const orig = mod?.default?.original_filename;
-  if (typeof url === "string") {
-    if (orig && !bundledByLowerName.has(orig.toLowerCase())) {
-      bundledByLowerName.set(orig.toLowerCase(), url);
-    }
-    const base = path.split("/").pop()?.replace(".asset.json", "");
-    if (base && !bundledByLowerName.has(base.toLowerCase())) {
-      bundledByLowerName.set(base.toLowerCase(), url);
-    }
-  }
-}
+const REAL_GLB_ALIAS: Record<GlbRoleKey, GlbRoleKey[]> = {
+  maleplayer: ["beachmale", "police", "beach"],
+  fplayer: ["beach", "beachmale"],
+  police: ["beachmale", "beach"],
+  mannpc: ["beachmale", "beach"],
+  femalenpc: ["beach", "beachmale"],
+  ch: ["beach", "beachmale"],
+  beachmale: ["beach"],
+  beach: ["beachmale"],
+  trampoline: ["beach"],
+  bicyclenpc: ["beachmale", "beach"],
+};
 
 export interface GlbTemplate {
   key: GlbRoleKey;
+  url: string;
   scene: THREE.Group;
   animations: THREE.AnimationClip[];
   height: number;
@@ -146,7 +119,6 @@ async function isRealGlbUrl(url: string): Promise<boolean> {
     const buf = await res.arrayBuffer();
     if (buf.byteLength < 4) return false;
     const bytes = new Uint8Array(buf);
-    // Binary glTF ("glTF") or JSON glTF ("{")
     const isGlbMagic =
       bytes[0] === 0x67 && bytes[1] === 0x6c && bytes[2] === 0x54 && bytes[3] === 0x46;
     const isJson = bytes[0] === 0x7b;
@@ -157,18 +129,8 @@ async function isRealGlbUrl(url: string): Promise<boolean> {
 }
 
 async function resolveGlbUrl(key: GlbRoleKey): Promise<string | null> {
-  const names = CANDIDATE_NAMES[key];
-  // 1. Check Vite-bundled glob or asset pointers first
-  for (const name of names) {
-    const found = bundledByLowerName.get(name.toLowerCase());
-    if (found && (await isRealGlbUrl(found))) return found;
-  }
-  // 2. Probe standard web paths (/, /models/, /public/) cleanly
-  for (const name of names) {
-    const enc = encodeURIComponent(name);
-    for (const url of [`/${enc}`, `/models/${enc}`, `/public/${enc}`]) {
-      if (await isRealGlbUrl(url)) return url;
-    }
+  for (const url of GLB_PUBLIC_URLS[key]) {
+    if (await isRealGlbUrl(url)) return url;
   }
   return null;
 }
@@ -186,7 +148,7 @@ function normalizeScene(raw: THREE.Group, targetHeight: number): THREE.Group {
     if (obj instanceof THREE.Mesh) {
       obj.castShadow = false;
       obj.receiveShadow = false;
-      obj.frustumCulled = true;
+      obj.frustumCulled = !(obj instanceof THREE.SkinnedMesh);
     }
   });
 
@@ -198,6 +160,16 @@ function normalizeScene(raw: THREE.Group, targetHeight: number): THREE.Group {
 
 export function getCachedGlb(key: GlbRoleKey): GlbTemplate | null {
   return cache.get(key) ?? null;
+}
+
+export function getCachedGlbWithFallback(key: GlbRoleKey): GlbTemplate | null {
+  const exact = cache.get(key);
+  if (exact) return exact;
+  for (const alt of REAL_GLB_ALIAS[key]) {
+    const found = cache.get(alt);
+    if (found) return found;
+  }
+  return null;
 }
 
 export function ensureGlbLoaded(key: GlbRoleKey): Promise<GlbTemplate | null> {
@@ -217,6 +189,7 @@ export function ensureGlbLoaded(key: GlbRoleKey): Promise<GlbTemplate | null> {
       const scene = normalizeScene(gltf.scene, height);
       const tpl: GlbTemplate = {
         key,
+        url,
         scene,
         animations: gltf.animations ?? [],
         height,
@@ -247,7 +220,7 @@ export function preloadAllCharacterGlbs() {
     "beachmale",
     "beach",
     "trampoline",
-    "bicycle",
+    "bicyclenpc",
   ];
   for (const k of keys) void ensureGlbLoaded(k);
 }
@@ -261,4 +234,176 @@ export function subscribeGlbRegistry(cb: () => void): () => void {
 
 export function cloneGlbTemplate(tpl: GlbTemplate): THREE.Group {
   return skeletonClone(tpl.scene) as THREE.Group;
+}
+
+export type AnimIntent = "idle" | "walk" | "run" | "dance" | "sit" | "swim" | "bounce";
+
+export interface CharacterAnimator {
+  update: (
+    dt: number,
+    phase: number,
+    t: number,
+    speed: number,
+    intent: AnimIntent,
+    innerGroup: THREE.Group | null,
+  ) => void;
+  dispose: () => void;
+}
+
+function findBone(root: THREE.Object3D, rx: RegExp): THREE.Bone | null {
+  let found: THREE.Bone | null = null;
+  root.traverse((obj) => {
+    if (!found && obj instanceof THREE.Bone && rx.test(obj.name)) found = obj;
+  });
+  return found;
+}
+
+export function createCharacterAnimator(
+  clonedRoot: THREE.Group,
+  tpl: GlbTemplate,
+  seedOffset = 0,
+): CharacterAnimator {
+  let bounceChild: THREE.Object3D | null = null;
+  let bounceBaseY = 0;
+  if (tpl.key === "trampoline") {
+    clonedRoot.traverse((obj) => {
+      if (!bounceChild && /girl|v28|jumper/i.test(obj.name)) {
+        bounceChild = obj;
+        bounceBaseY = obj.position.y;
+      }
+    });
+  }
+
+  let mixer: THREE.AnimationMixer | null = null;
+  const actions: Partial<Record<"idle" | "walk" | "run" | "dance" | "sit", THREE.AnimationAction>> =
+    {};
+  let activeKey: "idle" | "walk" | "run" | "dance" | "sit" | null = null;
+
+  if (tpl.animations.length > 0) {
+    mixer = new THREE.AnimationMixer(clonedRoot);
+    const clips = tpl.animations;
+    const pick = (rx: RegExp) => clips.find((c) => rx.test(c.name));
+    const idleClip = pick(/idle|stand|breath/i) ?? clips[0];
+    const walkClip = pick(/walk|stride/i) ?? idleClip;
+    const runClip = pick(/run|sprint|jog/i) ?? walkClip;
+    const danceClip = pick(/dance|groove|party/i) ?? walkClip;
+    const sitClip = pick(/sit|chair|ride/i) ?? idleClip;
+
+    if (idleClip) actions.idle = mixer.clipAction(idleClip);
+    if (walkClip) actions.walk = mixer.clipAction(walkClip);
+    if (runClip) actions.run = mixer.clipAction(runClip);
+    if (danceClip) actions.dance = mixer.clipAction(danceClip);
+    if (sitClip) actions.sit = mixer.clipAction(sitClip);
+
+    if (actions.idle) {
+      actions.idle.play();
+      activeKey = "idle";
+    }
+  }
+
+  // Optional skeletal bone rig refs when no animation clips exist in the .glb
+  const bones = !mixer
+    ? {
+        spine: findBone(clonedRoot, /spine1|spine/i),
+        leftArm: findBone(clonedRoot, /left.*arm|upperarm_l|arm_l|l_upperarm/i),
+        rightArm: findBone(clonedRoot, /right.*arm|upperarm_r|arm_r|r_upperarm/i),
+        leftLeg: findBone(clonedRoot, /left.*upleg|thigh_l|leg_l|l_thigh/i),
+        rightLeg: findBone(clonedRoot, /right.*upleg|thigh_r|leg_r|r_thigh/i),
+      }
+    : null;
+  const baseSpineX = bones?.spine?.rotation.x ?? 0;
+  const baseLArmX = bones?.leftArm?.rotation.x ?? 0;
+  const baseRArmX = bones?.rightArm?.rotation.x ?? 0;
+  const baseLLegX = bones?.leftLeg?.rotation.x ?? 0;
+  const baseRLegX = bones?.rightLeg?.rotation.x ?? 0;
+
+  return {
+    update(dt, phase, t, speed, intent, innerGroup) {
+      if (bounceChild) {
+        const wave = Math.abs(Math.sin(t * 4.4 + seedOffset));
+        bounceChild.position.y = bounceBaseY + wave * 0.9;
+        return;
+      }
+
+      if (mixer) {
+        const nextKey: "idle" | "walk" | "run" | "dance" | "sit" =
+          intent === "dance"
+            ? "dance"
+            : intent === "sit"
+              ? "sit"
+              : speed > 4.6
+                ? "run"
+                : speed > 0.25
+                  ? "walk"
+                  : "idle";
+        if (nextKey !== activeKey) {
+          const prev = activeKey ? actions[activeKey] : undefined;
+          const next = actions[nextKey];
+          if (next && next !== prev) {
+            next.reset().setEffectiveWeight(1).fadeIn(0.18).play();
+            prev?.fadeOut(0.18);
+          }
+          activeKey = nextKey;
+        }
+        mixer.update(dt * (speed > 0.2 ? Math.min(1.4, 0.8 + speed * 0.08) : 0.85));
+        if (innerGroup) {
+          innerGroup.position.y = 0;
+          innerGroup.rotation.set(intent === "swim" ? 1.35 : 0, 0, 0);
+        }
+        return;
+      }
+
+      const moveAmp = speed > 0.15 ? Math.min(1, speed / 3.5) : 0;
+      const swing = Math.sin(phase);
+
+      // Animate skeletal bones smoothly if the .glb carries a rig without clips
+      if (bones && (bones.leftLeg || bones.rightLeg || bones.leftArm || bones.rightArm)) {
+        if (intent === "sit") {
+          if (bones.leftLeg) bones.leftLeg.rotation.x = baseLLegX - 1.3;
+          if (bones.rightLeg) bones.rightLeg.rotation.x = baseRLegX - 1.3;
+          if (bones.leftArm) bones.leftArm.rotation.x = baseLArmX - 0.35;
+          if (bones.rightArm) bones.rightArm.rotation.x = baseRArmX - 0.35;
+          if (bones.spine) bones.spine.rotation.x = baseSpineX + 0.05;
+        } else if (intent === "dance") {
+          const d = Math.sin(t * 6.5 + seedOffset);
+          if (bones.leftArm) bones.leftArm.rotation.x = baseLArmX - 0.75 + d * 0.45;
+          if (bones.rightArm) bones.rightArm.rotation.x = baseRArmX - 0.75 - d * 0.45;
+          if (bones.leftLeg) bones.leftLeg.rotation.x = baseLLegX + d * 0.18;
+          if (bones.rightLeg) bones.rightLeg.rotation.x = baseRLegX - d * 0.18;
+          if (bones.spine) bones.spine.rotation.x = baseSpineX + Math.sin(t * 13) * 0.06;
+        } else {
+          const breath = Math.sin(t * 2.1 + seedOffset) * 0.03;
+          if (bones.leftLeg) bones.leftLeg.rotation.x = baseLLegX + swing * 0.55 * moveAmp;
+          if (bones.rightLeg) bones.rightLeg.rotation.x = baseRLegX - swing * 0.55 * moveAmp;
+          if (bones.leftArm) bones.leftArm.rotation.x = baseLArmX - swing * 0.45 * moveAmp + breath;
+          if (bones.rightArm)
+            bones.rightArm.rotation.x = baseRArmX + swing * 0.45 * moveAmp - breath;
+          if (bones.spine) bones.spine.rotation.x = baseSpineX + 0.04 * moveAmp;
+        }
+      }
+
+      if (innerGroup) {
+        if (tpl.key === "trampoline") {
+          innerGroup.position.y = Math.abs(Math.sin(t * 4.4 + seedOffset)) * 0.45;
+          innerGroup.rotation.set(0, 0, 0);
+          return;
+        }
+        const strideBob =
+          intent === "dance"
+            ? Math.abs(Math.sin(t * 7.2 + seedOffset)) * 0.055
+            : Math.abs(swing) * 0.045 * moveAmp;
+        const swayZ =
+          intent === "dance" ? Math.sin(t * 6.5 + seedOffset) * 0.08 : swing * 0.032 * moveAmp;
+        const leanX =
+          intent === "swim" ? 1.35 : intent === "bounce" ? 0 : moveAmp > 0 ? 0.03 * moveAmp : 0;
+        const breathScale = 1 + Math.sin(t * 2.2 + seedOffset) * 0.008;
+        innerGroup.scale.set(1, breathScale, 1);
+        innerGroup.position.y = strideBob;
+        innerGroup.rotation.set(leanX, 0, swayZ);
+      }
+    },
+    dispose() {
+      mixer?.stopAllAction();
+    },
+  };
 }

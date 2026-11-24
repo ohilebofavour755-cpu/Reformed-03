@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Environment, Lightformer } from "@react-three/drei";
 import { useGame, saveNow, type Gender } from "@/game/store";
@@ -7,21 +7,49 @@ import { initAudio } from "@/game/audio";
 import { isMobileViewport } from "@/game/materials";
 import {
   cloneGlbTemplate,
-  getCachedGlb,
+  createCharacterAnimator,
+  getCachedGlbWithFallback,
   preloadAllCharacterGlbs,
   subscribeGlbRegistry,
   type GlbTemplate,
 } from "@/game/glbRegistry";
-import { Humanoid } from "./Humanoid";
 import { Button } from "@/components/ui/button";
 import { initialLook } from "@/game/catalog";
 import { rt } from "@/game/runtime";
+import { useFrame } from "@react-three/fiber";
+import type * as THREE from "three";
 
 const LOOKS = { male: initialLook("male"), female: initialLook("female") };
 
-function PreviewGlb({ tpl }: { tpl: GlbTemplate }) {
-  const obj = useMemo(() => cloneGlbTemplate(tpl), [tpl]);
-  return <primitive object={obj} />;
+function PreviewGlb({ tpl, selected }: { tpl: GlbTemplate; selected: boolean }) {
+  const innerRef = useRef<THREE.Group>(null);
+  const { obj, animator } = useMemo(() => {
+    const cloned = cloneGlbTemplate(tpl);
+    return { obj: cloned, animator: createCharacterAnimator(cloned, tpl, selected ? 0 : 1.7) };
+  }, [tpl, selected]);
+
+  useEffect(() => {
+    return () => {
+      animator.dispose();
+    };
+  }, [animator]);
+
+  useFrame((_, raw) => {
+    animator.update(
+      Math.min(raw, 0.067),
+      0,
+      performance.now() / 1000,
+      0,
+      selected ? "dance" : "idle",
+      innerRef.current,
+    );
+  });
+
+  return (
+    <group ref={innerRef}>
+      <primitive object={obj} />
+    </group>
+  );
 }
 
 function PreviewPacer({ mobile }: { mobile: boolean }) {
@@ -47,7 +75,7 @@ export function CharacterCreate() {
   const [gender, setGender] = useState<Gender>("female");
   const [name, setName] = useState("");
   const [mobile] = useState(isMobileViewport);
-  const [, setVersion] = useState(0);
+  const [version, setVersion] = useState(0);
 
   useEffect(() => {
     preloadAllCharacterGlbs();
@@ -64,6 +92,8 @@ export function CharacterCreate() {
     Object.assign(rt.player, { x: 0, z: 2, heading: Math.PI });
     saveNow();
   };
+
+  void version;
 
   return (
     <div className="fixed inset-0 flex flex-col bg-scene">
@@ -92,7 +122,7 @@ export function CharacterCreate() {
             <Lightformer intensity={2} position={[0, 5, 3]} scale={[10, 10, 1]} />
           </Environment>
           {(["male", "female"] as Gender[]).map((g, i) => {
-            const tpl = getCachedGlb(g === "male" ? "maleplayer" : "fplayer");
+            const tpl = getCachedGlbWithFallback(g === "male" ? "maleplayer" : "fplayer");
             return (
               <group
                 key={g}
@@ -101,20 +131,7 @@ export function CharacterCreate() {
                 rotation-y={i ? -0.25 : 0.25}
                 onClick={() => setGender(g)}
               >
-                {tpl ? (
-                  <PreviewGlb tpl={tpl} />
-                ) : (
-                  <Humanoid
-                    look={LOOKS[g]}
-                    female={g === "female"}
-                    getPose={() => ({
-                      phase: 0,
-                      amp: 0,
-                      t: performance.now() / 1000,
-                      mode: gender === g ? "dance" : "walk",
-                    })}
-                  />
-                )}
+                {tpl && <PreviewGlb tpl={tpl} selected={gender === g} />}
               </group>
             );
           })}

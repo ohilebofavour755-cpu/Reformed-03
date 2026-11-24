@@ -50,6 +50,7 @@ import { initialLook, resolveApartmentPalette } from "@/game/catalog";
 import { useGame } from "@/game/store";
 import { rt } from "@/game/runtime";
 import { PRICES, START_MONEY, POLICE_FINE, HOUSES } from "@/game/rules";
+import { GLB_PUBLIC_URLS } from "@/game/glbRegistry";
 
 describe("planned life-game rules", () => {
   beforeEach(() => {
@@ -218,7 +219,18 @@ describe("planned life-game rules", () => {
     expect(useGame.getState().previewLook).toBeNull();
   });
 
-  it("populates 130+ busy NPCs including bicyclists, trampolines, and road safety without gossip", () => {
+  it("populates 130+ busy NPCs and maps all 10 character GLBs to public/ URLs without gossip", () => {
+    expect(GLB_PUBLIC_URLS.maleplayer[0]).toBe("/Maleplayer.glb");
+    expect(GLB_PUBLIC_URLS.fplayer[0]).toBe("/Fplayer.glb");
+    expect(GLB_PUBLIC_URLS.mannpc[0]).toBe("/Mannpc.glb");
+    expect(GLB_PUBLIC_URLS.femalenpc[0]).toBe("/Femalenpc.glb");
+    expect(GLB_PUBLIC_URLS.ch).toContain("/C%26h.glb");
+    expect(GLB_PUBLIC_URLS.police).toContain("/police.glb");
+    expect(GLB_PUBLIC_URLS.trampoline[0]).toBe("/trampoline.glb");
+    expect(GLB_PUBLIC_URLS.bicyclenpc[0]).toBe("/bicyclenpc.glb");
+    expect(GLB_PUBLIC_URLS.beachmale[0]).toBe("/Beachmale.glb");
+    expect(GLB_PUBLIC_URLS.beach[0]).toBe("/Beach.glb");
+
     const npcs = createNpcs(0, 0);
     expect(npcs.length).toBeGreaterThanOrEqual(130);
     const roles = new Set(npcs.map((n) => n.role));
