@@ -155,19 +155,111 @@
   }
 }
 
-@utility bg-scene { background: var(--background); }
-@utility hud-panel { background: color-mix(in oklch, var(--card) 88%, transparent); backdrop-filter: blur(10px); border: 1px solid var(--border); border-radius: 0.5rem; color: var(--foreground); }
-@utility chip { border-radius: 0.5rem; padding: 0.5rem 0.8rem; font-size: 0.75rem; font-weight: 700; background: color-mix(in oklch, var(--card) 88%, transparent); border: 1px solid var(--border); color: var(--foreground); backdrop-filter: blur(8px); &:disabled { opacity: 0.4; } }
-@utility chip-active { background: var(--primary); color: var(--primary-foreground); }
-@utility btn-hero { border-radius: 0.5rem; padding: 0.8rem 1rem; font-weight: 800; background: var(--primary); color: var(--primary-foreground); &:disabled { opacity: 0.5; } }
+@utility bg-scene {
+  background: var(--background);
+}
+@utility hud-panel {
+  background: color-mix(in oklch, var(--card) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  color: var(--foreground);
+}
+@utility chip {
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.8rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: color-mix(in oklch, var(--card) 88%, transparent);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  backdrop-filter: blur(8px);
+  &:disabled {
+    opacity: 0.4;
+  }
+}
+@utility chip-active {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+@utility btn-hero {
+  border-radius: 0.5rem;
+  padding: 0.8rem 1rem;
+  font-weight: 800;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  &:disabled {
+    opacity: 0.5;
+  }
+}
 
-.game-modal { position: absolute; inset: 0; display: grid; place-items: center; background: color-mix(in oklch, var(--background) 62%, transparent); padding: 16px; pointer-events: auto; }
-.game-dialog { width: min(100%, 480px); max-height: 85dvh; overflow-y: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
-.game-dialog h2 { font-size: 22px; font-weight: 800; }
-.map-canvas { width: 100%; aspect-ratio: 1; display: block; border-radius: 6px; }
-.decor-grid { display: grid; grid-template-columns: repeat(11, minmax(0, 1fr)); aspect-ratio: 11 / 9; gap: 2px; background: var(--muted); padding: 4px; }
-.decor-cell { min-width: 0; height: auto; padding: 0; aspect-ratio: 1; font-size: 12px; }
-.create-title { font-size: 44px; line-height: 1; }
-@media (min-width: 640px) { .create-title { font-size: 64px; } }
-@media (max-height: 620px) { .create-title { font-size: 30px; } .create-header { padding-top: 16px; } .create-form { margin-bottom: 12px; padding: 12px; } }
-@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; transition: none !important; } }
+.game-modal {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: color-mix(in oklch, var(--background) 62%, transparent);
+  padding: 16px;
+  pointer-events: auto;
+}
+.game-dialog {
+  width: min(100%, 480px);
+  max-height: 85dvh;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+}
+.game-dialog h2 {
+  font-size: 22px;
+  font-weight: 800;
+}
+.map-canvas {
+  width: 100%;
+  aspect-ratio: 1;
+  display: block;
+  border-radius: 6px;
+}
+.decor-grid {
+  display: grid;
+  grid-template-columns: repeat(11, minmax(0, 1fr));
+  aspect-ratio: 11 / 9;
+  gap: 2px;
+  background: var(--muted);
+  padding: 4px;
+}
+.decor-cell {
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  aspect-ratio: 1;
+  font-size: 12px;
+}
+.create-title {
+  font-size: 44px;
+  line-height: 1;
+}
+@media (min-width: 640px) {
+  .create-title {
+    font-size: 64px;
+  }
+}
+@media (max-height: 620px) {
+  .create-title {
+    font-size: 30px;
+  }
+  .create-header {
+    padding-top: 16px;
+  }
+  .create-form {
+    margin-bottom: 12px;
+    padding: 12px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    scroll-behavior: auto;
+    transition: none !important;
+  }
+}

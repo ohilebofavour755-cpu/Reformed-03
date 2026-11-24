@@ -1,46 +1,625 @@
-import { Suspense, useMemo } from 'react';
-import * as THREE from 'three';
-import { useGame } from '@/game/store';
-import { ROOM_THEMES } from '@/game/catalog';
-import { Model } from './Model';
+import { Suspense, useMemo, useRef } from "react";
+import { useFrame } from "@react-three/fiber";
+import * as THREE from "three";
+import { useGame } from "@/game/store";
+import { resolveApartmentPalette, OUTFITS } from "@/game/catalog";
+import { RIDE_TIERS } from "@/game/rules";
+import {
+  BATH_DOOR,
+  BATH_WALLS,
+  EAST_DIVIDER_WALLS,
+  TERRACE_BOUNDS,
+  GARAGE_BOUNDS,
+  insideHomeBathroom,
+  homeBathDoorShouldOpen,
+} from "@/game/sim/apartment";
+import { sharedMat, getUnitBoxBottom, getUnitBoxCenter } from "@/game/materials";
+import { rt } from "@/game/runtime";
+import { Model } from "./Model";
+import { RideVisual } from "./Vehicles";
 
-function Floor() {
+function MatteFloor({ baseColor, houseTier }: { baseColor: string; houseTier: number }) {
   const texture = useMemo(() => {
-    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 256;
-    const c = canvas.getContext('2d');
-    if (c) { c.fillStyle = '#ae9882'; c.fillRect(0,0,256,256); for (let i=0;i<16;i++) { c.fillStyle = i % 2 ? '#a38c77' : '#b7a28c'; c.fillRect(0,i*16,256,15); c.strokeStyle='#8f7a66'; c.strokeRect((i%3)*50,i*16,130,16); } }
-    const t = new THREE.CanvasTexture(canvas); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(4,4); return t;
-  }, []);
-  return <mesh rotation-x={-Math.PI/2} receiveShadow><planeGeometry args={[14,12]} /><meshStandardMaterial map={texture} roughness={.8} /></mesh>;
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 256;
+    const c = canvas.getContext("2d");
+    if (c) {
+      c.fillStyle = baseColor;
+      c.fillRect(0, 0, 256, 256);
+      if (houseTier === 1) {
+        // Lekki Phase 1: soft matte wood-look porcelain planks
+        c.strokeStyle = "rgba(85,60,42,0.09)";
+        c.lineWidth = 2;
+        for (let y = 0; y < 256; y += 32) {
+          c.fillStyle = (y / 32) % 2 === 0 ? "rgba(180,145,105,0.08)" : "rgba(0,0,0,0.03)";
+          c.fillRect(0, y, 256, 32);
+          c.strokeRect(0, y, 256, 32);
+        }
+      } else if (houseTier === 2) {
+        // Victoria Island High-Rise: soft matte marble-effect tiles
+        c.strokeStyle = "rgba(120,112,106,0.1)";
+        c.lineWidth = 2;
+        for (let y = 0; y < 256; y += 64) {
+          for (let x = 0; x < 256; x += 64) {
+            c.fillStyle = "rgba(255,255,255,0.06)";
+            c.fillRect(x + 1, y + 1, 62, 62);
+            c.strokeRect(x, y, 64, 64);
+          }
+        }
+        c.strokeStyle = "rgba(165,155,148,0.12)";
+        c.beginPath();
+        c.moveTo(0, 42);
+        c.lineTo(128, 92);
+        c.lineTo(256, 70);
+        c.stroke();
+      } else if (houseTier >= 3) {
+        // Banana Island Penthouse: warm matte limestone & subtle gold inlay grid
+        c.strokeStyle = "rgba(196,160,92,0.18)";
+        c.lineWidth = 2;
+        for (let y = 0; y < 256; y += 64) {
+          for (let x = 0; x < 256; x += 64) {
+            c.fillStyle =
+              (x / 64 + y / 64) % 2 === 0 ? "rgba(255,250,240,0.06)" : "rgba(0,0,0,0.02)";
+            c.fillRect(x + 2, y + 2, 60, 60);
+            c.strokeRect(x, y, 64, 64);
+          }
+        }
+      } else {
+        // Tier 0 Starter Room: soft matte Pinterest porcelain tile
+        c.strokeStyle = "rgba(80,68,62,0.08)";
+        c.lineWidth = 2;
+        for (let y = 0; y < 256; y += 64) {
+          for (let x = 0; x < 256; x += 64) {
+            c.fillStyle =
+              (x / 64 + y / 64) % 2 === 0 ? "rgba(255,255,255,0.03)" : "rgba(0,0,0,0.02)";
+            c.fillRect(x + 1, y + 1, 62, 62);
+            c.strokeRect(x, y, 64, 64);
+          }
+        }
+      }
+    }
+    const t = new THREE.CanvasTexture(canvas);
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(5, 4);
+    return t;
+  }, [baseColor, houseTier]);
+
+  return (
+    <mesh rotation-x={-Math.PI / 2}>
+      <planeGeometry args={[14, 12]} />
+      <meshStandardMaterial map={texture} roughness={0.95} metalness={0} />
+    </mesh>
+  );
 }
-const furniture: { name: string; x: number; z: number; size: [number,number,number]; rotate?: number }[] = [
-  { name:'bedDouble',x:-4.7,z:-3.6,size:[2.5,.85,3.8] },
-  { name:'loungeSofa',x:-4.8,z:1.2,size:[1.8,1.1,3.2],rotate:Math.PI/2 },
-  { name:'kitchenStove',x:.1,z:-5,size:[1.3,1.05,1.3] },
-  { name:'kitchenSink',x:1.7,z:-5,size:[1.4,1.05,1.3] },
-  { name:'kitchenFridge',x:3.6,z:-5,size:[1.2,2.2,1.3] },
-  { name:'table',x:2.5,z:-.2,size:[2.1,.85,1.6] },
-  { name:'desk',x:5.7,z:3,size:[1.3,.85,2.5],rotate:Math.PI/2 },
-  { name:'laptop',x:5.7,z:3,size:[.65,.4,.5] },
-  { name:'bookcaseClosedDoors',x:-1.7,z:-5.3,size:[1.7,2.4,.8] },
-  { name:'toilet',x:-6,z:4.5,size:[1.1,1.1,1.2] },
+
+function Part({
+  p,
+  s,
+  c,
+  r = 0.86,
+  m = 0,
+  emissive,
+  emissiveIntensity = 0,
+  rotY = 0,
+}: {
+  p: [number, number, number];
+  s: [number, number, number];
+  c: string;
+  r?: number;
+  m?: number;
+  emissive?: string;
+  emissiveIntensity?: number;
+  rotY?: number;
+}) {
+  return (
+    <mesh
+      position={p}
+      scale={s}
+      rotation-y={rotY}
+      geometry={getUnitBoxBottom()}
+      material={sharedMat(c, r, m, emissive, emissiveIntensity)}
+    />
+  );
+}
+
+function BathDoor({ trimColor }: { trimColor: string }) {
+  const hingeRef = useRef<THREE.Group>(null);
+  const angle = useRef(0);
+
+  useFrame((_, raw) => {
+    const dt = Math.min(raw, 0.05);
+    const open = homeBathDoorShouldOpen(rt.player.x, rt.player.z, rt.doorLocked);
+    const target = open ? Math.PI * 0.48 : 0;
+    angle.current += (target - angle.current) * Math.min(1, dt * 10);
+    if (hingeRef.current) hingeRef.current.rotation.y = angle.current;
+  });
+
+  const inBath = insideHomeBathroom(rt.player.x, rt.player.z);
+  const lockColor = rt.doorLocked ? "#d94f30" : inBath ? "#f2c14e" : "#2f7d5b";
+
+  return (
+    <group ref={hingeRef} position={[BATH_DOOR.x, 0, BATH_DOOR.hingeZ]}>
+      <mesh
+        position={[0, 1.15, BATH_DOOR.width / 2]}
+        scale={[0.09, 2.3, BATH_DOOR.width]}
+        geometry={getUnitBoxCenter()}
+        material={sharedMat("#8a6144", 0.78)}
+      />
+      <mesh
+        position={[0.07, 1.05, BATH_DOOR.width - 0.18]}
+        scale={[0.06, 0.08, 0.14]}
+        geometry={getUnitBoxCenter()}
+        material={sharedMat(trimColor, 0.35, 0.65)}
+      />
+      <mesh
+        position={[-0.07, 1.28, BATH_DOOR.width - 0.18]}
+        scale={[0.04, 0.08, 0.08]}
+        geometry={getUnitBoxCenter()}
+        material={sharedMat(lockColor, 0.4, 0.2, lockColor, 0.6)}
+      />
+    </group>
+  );
+}
+
+function OpenWardrobeCloset({ trimColor, accent }: { trimColor: string; accent: string }) {
+  return (
+    <group position={[-1.7, 0, -5.35]}>
+      {/* Open wooden wardrobe shell */}
+      <Part p={[0, 0, -0.34]} s={[1.86, 2.38, 0.08]} c="#9e7453" r={0.85} />
+      <Part p={[-0.89, 0, 0]} s={[0.08, 2.38, 0.74]} c="#8a6144" r={0.85} />
+      <Part p={[0.89, 0, 0]} s={[0.08, 2.38, 0.74]} c="#8a6144" r={0.85} />
+      <Part p={[0, 2.32, 0]} s={[1.9, 0.1, 0.78]} c="#8a6144" r={0.82} />
+      <Part p={[0, 1.82, 0]} s={[1.74, 0.06, 0.66]} c="#b48a66" r={0.85} />
+      <Part p={[0, 0.42, 0]} s={[1.74, 0.06, 0.66]} c="#b48a66" r={0.85} />
+      <Part p={[0, 0.04, 0]} s={[1.78, 0.06, 0.68]} c="#8a6144" r={0.85} />
+      {/* Warm closet LED strip & brass hanging bar */}
+      <Part
+        p={[0, 1.76, -0.22]}
+        s={[1.64, 0.04, 0.04]}
+        c="#fff2d2"
+        emissive="#ffd58c"
+        emissiveIntensity={0.8}
+      />
+      <Part p={[0, 1.66, 0.02]} s={[1.7, 0.04, 0.04]} c={trimColor} m={0.7} r={0.3} />
+      {/* Hanging outfits */}
+      {OUTFITS.map((o, i) => (
+        <Part
+          key={o.id}
+          p={[-0.64 + i * 0.32, 0.84, 0.02]}
+          s={[0.22, 0.76, 0.38]}
+          c={o.shirt}
+          r={0.9}
+        />
+      ))}
+      {/* Folded stacks & storage boxes on upper shelf */}
+      <Part p={[-0.52, 1.88, 0]} s={[0.45, 0.16, 0.42]} c={accent} r={0.9} />
+      <Part p={[-0.52, 2.04, 0]} s={[0.42, 0.12, 0.38]} c="#faf4ef" r={0.9} />
+      <Part p={[0.48, 1.88, 0]} s={[0.52, 0.24, 0.46]} c="#e9dfd4" r={0.88} />
+      {/* Shoe pairs on bottom shelf */}
+      <Part p={[-0.5, 0.07, 0.04]} s={[0.26, 0.12, 0.32]} c="#f5f0ea" r={0.8} />
+      <Part p={[0.05, 0.07, 0.04]} s={[0.26, 0.12, 0.32]} c={accent} r={0.8} />
+      <Part p={[0.52, 0.07, 0.04]} s={[0.26, 0.12, 0.32]} c="#2d3138" r={0.8} />
+    </group>
+  );
+}
+
+const furniture: {
+  name: string;
+  x: number;
+  z: number;
+  size: [number, number, number];
+  rotate?: number;
+}[] = [
+  { name: "bedDouble", x: -4.7, z: -3.6, size: [2.5, 0.85, 3.8] },
+  { name: "loungeSofa", x: -5.1, z: -0.2, size: [2.6, 1.0, 1.2] },
+  { name: "kitchenStove", x: 0.4, z: -5.0, size: [1.3, 1.05, 1.3] },
+  { name: "kitchenSink", x: 2.0, z: -5.0, size: [1.4, 1.05, 1.3] },
+  { name: "kitchenFridge", x: 4.1, z: -5.0, size: [1.25, 2.2, 1.3] },
+  { name: "table", x: 2.8, z: -0.5, size: [1.9, 0.85, 1.4] },
+  { name: "chair", x: 1.55, z: -0.5, size: [0.65, 0.95, 0.65], rotate: Math.PI / 2 },
+  { name: "chair", x: 4.05, z: -0.5, size: [0.65, 0.95, 0.65], rotate: -Math.PI / 2 },
+  { name: "desk", x: 3.3, z: 3.2, size: [1.2, 0.85, 2.2], rotate: Math.PI / 2 },
+  { name: "chair", x: 2.25, z: 3.2, size: [0.65, 0.95, 0.65], rotate: Math.PI / 2 },
+  { name: "laptop", x: 3.3, z: 3.2, size: [0.65, 0.4, 0.5], rotate: -Math.PI / 2 },
+  { name: "pottedPlant", x: -3.05, z: -5.3, size: [0.62, 1.15, 0.62] },
+  { name: "pottedPlant", x: 6.1, z: -5.0, size: [0.65, 1.25, 0.65] },
+  { name: "toilet", x: -6.05, z: 4.95, size: [0.95, 1.05, 1.1], rotate: Math.PI / 2 },
 ];
+
 export function Apartment() {
-  const s=useGame(), theme=ROOM_THEMES.find(t=>t.id===s.roomTheme) ?? ROOM_THEMES[0];
-  if (!theme) return null;
-  return <group>
-    <Floor />
-    <mesh position={[0,1.6,-6]} receiveShadow><boxGeometry args={[14.3,3.2,.2]} /><meshStandardMaterial color={theme.wall} /></mesh>
-    <mesh position={[-7,1.6,0]}><boxGeometry args={[.2,3.2,12]} /><meshStandardMaterial color={theme.wall} /></mesh>
-    <mesh position={[7,.15,0]}><boxGeometry args={[.2,.3,12]} /><meshStandardMaterial color={theme.wall} /></mesh>
-    <mesh position={[0,.12,6]}><boxGeometry args={[14,.24,.2]} /><meshStandardMaterial color={theme.wall} /></mesh>
-    <mesh position={[0,.01,5.5]} rotation-x={-Math.PI/2}><planeGeometry args={[1.8,.8]} /><meshStandardMaterial color={theme.accent} /></mesh>
-    <mesh position={[-4.5,.015,.9]} rotation-x={-Math.PI/2}><planeGeometry args={[3.9,4.5]} /><meshStandardMaterial color={theme.accent} roughness={1} /></mesh>
-    <mesh position={[0,2,-5.87]}><boxGeometry args={[2.5,1.4,.05]} /><meshStandardMaterial color={theme.accent} metalness={.15} /></mesh>
-    <pointLight position={[0,3.5,0]} intensity={15} distance={22} color="#fff0dd" />
-    <Suspense fallback={null}>
-      {furniture.map(f=><group key={f.name} position={[f.x,f.name==='laptop'?.86:0,f.z]} rotation-y={f.rotate ?? 0}><Model name={f.name} size={f.size} /></group>)}
-      {s.decor.map(d=><group key={d.id} position={[d.x,0,d.z]} rotation-y={d.rotation}><Model name={d.kind==='plant'?'pottedPlant':d.kind==='lamp'?'lampRoundFloor':'bear'} size={d.kind==='lamp'?[.6,1.8,.6]:[.7,1,.7]} /></group>)}
-    </Suspense>
-  </group>;
+  const s = useGame();
+  const gender = s.profile?.gender ?? "female";
+  const pal = resolveApartmentPalette(gender, s.roomTheme);
+  const terrace = TERRACE_BOUNDS(s.house);
+  const terraceMidX = (terrace.minX + terrace.maxX) / 2;
+  const garageMidX = (GARAGE_BOUNDS.minX + GARAGE_BOUNDS.maxX) / 2;
+  const garageMidZ = (GARAGE_BOUNDS.minZ + GARAGE_BOUNDS.maxZ) / 2;
+  const activeRide = RIDE_TIERS.find((r) => r.tier === s.rideTier);
+  const bulbPositions = Array.from(
+    { length: 6 },
+    (_, i) => terrace.minX + 0.7 + (i * (terrace.width - 1.2)) / 5,
+  );
+
+  return (
+    <group>
+      <MatteFloor baseColor={pal.floor} houseTier={s.house} />
+
+      {/* Outer Apartment Walls (North, West, South entrance lip, East partition with Terrace & Garage doors) */}
+      <Part p={[0, 0, -6]} s={[14.3, 3.2, 0.2]} c={pal.accentWall} r={0.9} />
+      <Part p={[-7, 0, 0]} s={[0.2, 3.2, 12]} c={pal.wall} r={0.9} />
+      <Part p={[0, 0, 6]} s={[14, 0.24, 0.2]} c={pal.wall} r={0.9} />
+      {EAST_DIVIDER_WALLS.map((w, i) => (
+        <Part key={i} p={[w.x, 0, w.z]} s={[w.hx * 2, 3.1, w.hz * 2]} c={pal.wall} r={0.9} />
+      ))}
+      {/* Sliding Glass Terrace Doors (x = 7.0, z in [-2.3, -0.3]) */}
+      <Part p={[7.0, 2.35, -1.3]} s={[0.24, 0.75, 2.0]} c={pal.wall} r={0.9} />
+      <Part p={[7.0, 0, -2.32]} s={[0.1, 2.35, 0.1]} c={pal.trim} m={0.4} r={0.45} />
+      <Part p={[7.0, 0, -0.28]} s={[0.1, 2.35, 0.1]} c={pal.trim} m={0.4} r={0.45} />
+      <mesh
+        position={[7.06, 1.18, -2.02]}
+        scale={[0.04, 2.28, 0.56]}
+        geometry={getUnitBoxCenter()}
+        material={sharedMat("#d8eef7", 0.12, 0.2)}
+      />
+      <mesh
+        position={[7.06, 1.18, -0.58]}
+        scale={[0.04, 2.28, 0.56]}
+        geometry={getUnitBoxCenter()}
+        material={sharedMat("#d8eef7", 0.12, 0.2)}
+      />
+      {/* Garage Access Door Frame (x = 7.0, z in [3.5, 5.0]) */}
+      <Part p={[7.0, 2.35, 4.25]} s={[0.24, 0.75, 1.5]} c={pal.wall} r={0.9} />
+
+      {/* Front doormat */}
+      <mesh position={[0, 0.015, 5.45]} rotation-x={-Math.PI / 2}>
+        <planeGeometry args={[1.9, 0.85]} />
+        <meshStandardMaterial color={pal.accent} roughness={0.96} />
+      </mesh>
+
+      {/* Cozy Bedroom Rug, Pillows, Throw Blanket & Nightstand */}
+      <mesh position={[-4.7, 0.014, -3.5]} rotation-x={-Math.PI / 2}>
+        <planeGeometry args={[3.7, 4.4]} />
+        <meshStandardMaterial color={pal.accent} roughness={0.98} />
+      </mesh>
+      <Part p={[-5.25, 0.62, -4.9]} s={[0.85, 0.18, 0.5]} c={pal.pillow} r={0.92} />
+      <Part p={[-4.15, 0.62, -4.9]} s={[0.85, 0.18, 0.5]} c={pal.pillow} r={0.92} />
+      <Part p={[-4.7, 0.58, -2.55]} s={[2.35, 0.1, 1.45]} c={pal.bedSheet} r={0.95} />
+      <Part p={[-6.35, 0, -4.8]} s={[0.78, 0.65, 0.78]} c="#7d593e" r={0.85} />
+      <Part p={[-6.35, 0.65, -4.8]} s={[0.14, 0.26, 0.14]} c={pal.trim} m={0.45} r={0.35} />
+      <Part
+        p={[-6.35, 0.91, -4.8]}
+        s={[0.38, 0.28, 0.38]}
+        c="#fff4d6"
+        emissive="#ffd288"
+        emissiveIntensity={0.65}
+        r={0.7}
+      />
+
+      {/* Open Wooden 3D Wardrobe Closet */}
+      <OpenWardrobeCloset trimColor={pal.trim} accent={pal.accent} />
+
+      {/* Cozy Living Room Rug, Coffee Table & Media Console + TV */}
+      <mesh position={[-4.8, 0.015, 0.75]} rotation-x={-Math.PI / 2}>
+        <planeGeometry args={[3.9, 3.1]} />
+        <meshStandardMaterial color={pal.sofa} roughness={0.98} />
+      </mesh>
+      <Part p={[-5.1, 0, 1.05]} s={[1.6, 0.42, 0.7]} c="#78563c" r={0.82} />
+      <Part p={[-4.8, 0.42, 1.05]} s={[0.16, 0.14, 0.16]} c="#f5efe6" r={0.5} />
+      <Part p={[-5.2, 0, 2.05]} s={[2.1, 0.55, 0.42]} c="#5e4330" r={0.8} />
+      <Part p={[-5.2, 0.85, 2.22]} s={[1.8, 1.05, 0.08]} c="#1a1d22" r={0.3} m={0.35} />
+      <Part
+        p={[-5.2, 0.9, 2.17]}
+        s={[1.66, 0.92, 0.02]}
+        c="#284c66"
+        emissive="#58a6d6"
+        emissiveIntensity={0.45}
+        r={0.25}
+      />
+
+      {/* Framed Pinterest Wall Art & Kitchen Counter */}
+      <Part p={[-4.7, 1.85, -5.88]} s={[2.1, 1.15, 0.06]} c={pal.trim} m={0.3} r={0.45} />
+      <Part p={[-4.7, 1.92, -5.84]} s={[1.85, 0.95, 0.04]} c={pal.accent} r={0.8} />
+      <Part p={[1.6, 1.8, -5.88]} s={[2.3, 1.2, 0.06]} c={pal.trim} m={0.3} r={0.45} />
+      <Part p={[1.6, 1.88, -5.84]} s={[2.05, 1.0, 0.04]} c={pal.bedSheet} r={0.8} />
+      <Part p={[-0.5, 0, -5.0]} s={[0.85, 0.92, 1.2]} c="#ede6de" r={0.82} />
+      <Part p={[3.05, 0, -5.0]} s={[0.8, 0.92, 1.2]} c="#ede6de" r={0.82} />
+      <Part p={[0.4, 1.06, -5.0]} s={[0.42, 0.24, 0.42]} c="#c9412b" m={0.3} r={0.45} />
+
+      {/* Tier 1+ Lekki Phase 1 warm cove lighting & dual-monitor workspace upgrade */}
+      {s.house >= 1 && (
+        <>
+          <Part
+            p={[0, 3.05, -5.85]}
+            s={[13.4, 0.08, 0.08]}
+            c="#fff3d6"
+            emissive="#ffd48a"
+            emissiveIntensity={0.7}
+          />
+          <Part p={[3.5, 0.88, 3.7]} s={[0.12, 0.45, 0.68]} c="#181c22" r={0.3} />
+          <Part
+            p={[3.43, 1.05, 3.7]}
+            s={[0.02, 0.36, 0.6]}
+            c="#3b82f6"
+            emissive="#60a5fa"
+            emissiveIntensity={0.5}
+          />
+        </>
+      )}
+
+      {/* Tier 2+ Victoria Island Luxury High-Rise chandelier & illuminated wardrobe trim */}
+      {s.house >= 2 && (
+        <>
+          <Part
+            p={[0.5, 3.05, -0.5]}
+            s={[1.25, 0.14, 1.25]}
+            c="#ffe8b0"
+            emissive="#ffd07b"
+            emissiveIntensity={0.85}
+            r={0.4}
+          />
+          <Part p={[2.8, 0, -1.65]} s={[0.6, 0.6, 0.6]} c={pal.sofa} r={0.9} />
+        </>
+      )}
+
+      {/* Tier 3 Banana Island Waterfront Penthouse crown pendant & designer vanity */}
+      {s.house >= 3 && (
+        <Part
+          p={[-4.7, 3.05, -2.5]}
+          s={[1.4, 0.12, 1.4]}
+          c="#fff0c4"
+          emissive="#ffd27a"
+          emissiveIntensity={0.9}
+          r={0.35}
+        />
+      )}
+
+      {/* Enclosed Private Bathroom (SW corner: x in [-7, -3.8], z in [2.4, 6.0]) */}
+      <mesh position={[-5.4, 0.02, 4.2]} rotation-x={-Math.PI / 2}>
+        <planeGeometry args={[3.2, 3.6]} />
+        <meshStandardMaterial color="#e5ecee" roughness={0.82} metalness={0} />
+      </mesh>
+      <mesh position={[-5.2, 0.025, 4.95]} rotation-x={-Math.PI / 2}>
+        <planeGeometry args={[1.0, 0.85]} />
+        <meshStandardMaterial color={pal.accent} roughness={0.96} />
+      </mesh>
+      {BATH_WALLS.map((w, i) => (
+        <Part key={i} p={[w.x, 0, w.z]} s={[w.hx * 2, 2.8, w.hz * 2]} c={pal.wall} r={0.9} />
+      ))}
+      <Part
+        p={[BATH_DOOR.x, 2.3, BATH_DOOR.z]}
+        s={[0.24, 0.5, BATH_DOOR.width]}
+        c={pal.wall}
+        r={0.9}
+      />
+      <Part p={[-6.25, 0, 3.15]} s={[0.85, 0.82, 0.9]} c="#f4f1ea" r={0.65} />
+      <Part p={[-6.25, 0.82, 3.15]} s={[0.7, 0.08, 0.72]} c="#ffffff" r={0.4} />
+      <Part p={[-6.86, 1.25, 3.15]} s={[0.05, 0.95, 0.75]} c="#b8d4e3" m={0.75} r={0.15} />
+      <BathDoor trimColor={pal.trim} />
+
+      {/* OUTDOOR TERRACE / BALCONY (x in [7.0, terrace.maxX], z in [-5.7, 1.2]) */}
+      <group>
+        <mesh position={[terraceMidX, 0.01, -2.25]} rotation-x={-Math.PI / 2}>
+          <planeGeometry args={[terrace.width, 6.9]} />
+          <meshStandardMaterial color={pal.terraceFloor} roughness={0.95} metalness={0} />
+        </mesh>
+        {/* Terrace outdoor rug */}
+        <mesh position={[9.4, 0.02, -3.1]} rotation-x={-Math.PI / 2}>
+          <planeGeometry args={[2.9, 3.3]} />
+          <meshStandardMaterial color={pal.accent} roughness={0.98} />
+        </mesh>
+        {/* Solid divider wall between Terrace and Garage */}
+        <Part
+          p={[(terrace.minX + Math.max(terrace.maxX, GARAGE_BOUNDS.maxX)) / 2, 0, 1.3]}
+          s={[Math.max(terrace.width, GARAGE_BOUNDS.maxX - GARAGE_BOUNDS.minX), 2.5, 0.22]}
+          c={pal.wall}
+          r={0.9}
+        />
+        {/* Safety Railings (North & East glass + trim handrail) */}
+        <Part
+          p={[terraceMidX, 0, terrace.minZ]}
+          s={[terrace.width, 0.18, 0.14]}
+          c={pal.trim}
+          r={0.5}
+        />
+        <Part
+          p={[terraceMidX, 0.98, terrace.minZ]}
+          s={[terrace.width, 0.08, 0.12]}
+          c={pal.trim}
+          m={0.3}
+          r={0.4}
+        />
+        <mesh
+          position={[terraceMidX, 0.56, terrace.minZ]}
+          scale={[terrace.width - 0.2, 0.74, 0.04]}
+          geometry={getUnitBoxCenter()}
+          material={sharedMat("#d8eef7", 0.15, 0.15)}
+        />
+        <Part p={[terrace.maxX, 0, -2.25]} s={[0.14, 0.18, 6.9]} c={pal.trim} r={0.5} />
+        <Part p={[terrace.maxX, 0.98, -2.25]} s={[0.12, 0.08, 6.9]} c={pal.trim} m={0.3} r={0.4} />
+        <mesh
+          position={[terrace.maxX, 0.56, -2.25]}
+          scale={[0.04, 0.74, 6.7]}
+          geometry={getUnitBoxCenter()}
+          material={sharedMat("#d8eef7", 0.15, 0.15)}
+        />
+        {/* Corner String Light Posts & Warm Overhead Bulbs */}
+        <Part p={[terrace.minX + 0.2, 0, terrace.minZ + 0.2]} s={[0.1, 2.7, 0.1]} c={pal.trim} />
+        <Part p={[terrace.maxX - 0.2, 0, terrace.minZ + 0.2]} s={[0.1, 2.7, 0.1]} c={pal.trim} />
+        <Part p={[terrace.maxX - 0.2, 0, 1.0]} s={[0.1, 2.7, 0.1]} c={pal.trim} />
+        <Part
+          p={[terraceMidX, 2.65, terrace.minZ + 0.25]}
+          s={[terrace.width - 0.3, 0.03, 0.03]}
+          c="#2f2c2a"
+        />
+        {bulbPositions.map((bx, i) => (
+          <Part
+            key={i}
+            p={[bx, 2.52, terrace.minZ + 0.25]}
+            s={[0.14, 0.14, 0.14]}
+            c="#fff3cc"
+            emissive="#ffcf78"
+            emissiveIntensity={1.2}
+            r={0.3}
+          />
+        ))}
+        {/* Terrace Lounge Chair & Side Table (matches APARTMENT_SEATS.terrace) */}
+        <Part p={[9.4, 0, -3.7]} s={[1.15, 0.36, 1.15]} c="#7d593e" r={0.85} />
+        <Part p={[9.4, 0.36, -3.7]} s={[1.05, 0.14, 1.05]} c={pal.sofa} r={0.92} />
+        <Part p={[9.4, 0.5, -4.16]} s={[1.05, 0.48, 0.16]} c={pal.sofa} r={0.92} />
+        <Part p={[9.4, 0, -2.3]} s={[0.68, 0.45, 0.68]} c="#7d593e" r={0.82} />
+        <Part
+          p={[9.4, 0.46, -2.3]}
+          s={[0.18, 0.18, 0.18]}
+          c="#fff3d0"
+          emissive="#ffd07b"
+          emissiveIntensity={0.6}
+        />
+
+        {/* Banana Island Tier 3 Waterfront Plunge Pool & Sun Lounger on Expanded Terrace */}
+        {s.house >= 3 && (
+          <group>
+            <Part p={[14.2, 0.02, -2.8]} s={[2.6, 0.18, 4.4]} c="#f3efe8" r={0.8} />
+            <mesh position={[14.2, 0.21, -2.8]} rotation-x={-Math.PI / 2}>
+              <planeGeometry args={[2.1, 3.9]} />
+              <meshStandardMaterial color="#36b5c9" roughness={0.22} metalness={0.12} />
+            </mesh>
+            <Part p={[12.2, 0, -3.5]} s={[0.95, 0.34, 1.7]} c="#7d593e" r={0.85} />
+            <Part p={[12.2, 0.34, -3.5]} s={[0.85, 0.12, 1.6]} c={pal.bedSheet} r={0.92} />
+          </group>
+        )}
+
+        {/* Scenic Distant City Skyline & Lagoon Horizon Overlooking Terrace */}
+        <group position={[23, -4, -3]}>
+          {[
+            { z: -12, h: s.house >= 2 ? 16 : 12, w: 4, c: "#b5c7d9" },
+            { z: -5, h: s.house >= 2 ? 22 : 17, w: 4.5, c: "#9db4cb" },
+            { z: 3, h: s.house >= 2 ? 19 : 14, w: 4.2, c: "#c7d4e2" },
+            { z: 10, h: s.house >= 2 ? 24 : 19, w: 5, c: "#a7bed4" },
+          ].map((b, i) => (
+            <Part key={i} p={[0, 0, b.z]} s={[b.w, b.h, b.w]} c={b.c} r={0.9} />
+          ))}
+          {s.house >= 3 && (
+            <mesh position={[14, 0.5, 0]} rotation-x={-Math.PI / 2}>
+              <planeGeometry args={[36, 80]} />
+              <meshStandardMaterial color="#2b8da3" roughness={0.25} />
+            </mesh>
+          )}
+        </group>
+      </group>
+
+      {/* ATTACHED COVERED GARAGE BAY (x in [7.0, 12.2], z in [1.4, 5.8]) */}
+      <group>
+        <mesh position={[garageMidX, 0.012, garageMidZ]} rotation-x={-Math.PI / 2}>
+          <planeGeometry
+            args={[
+              GARAGE_BOUNDS.maxX - GARAGE_BOUNDS.minX,
+              GARAGE_BOUNDS.maxZ - GARAGE_BOUNDS.minZ,
+            ]}
+          />
+          <meshStandardMaterial color="#7d838c" roughness={0.96} metalness={0} />
+        </mesh>
+        {/* Parking Bay Outline */}
+        <mesh position={[10.2, 0.02, 3.6]} rotation-x={-Math.PI / 2}>
+          <planeGeometry args={[2.8, 2.0]} />
+          <meshStandardMaterial color="#676d75" roughness={0.96} metalness={0} />
+        </mesh>
+        {/* Cutaway Garage Walls & Covered Roof Beam */}
+        <Part p={[GARAGE_BOUNDS.maxX, 0, garageMidZ]} s={[0.2, 2.6, 4.4]} c="#d9dde2" r={0.9} />
+        <Part p={[garageMidX, 0, GARAGE_BOUNDS.maxZ]} s={[5.2, 0.35, 0.2]} c="#d9dde2" r={0.9} />
+        <Part
+          p={[garageMidX, 2.5, GARAGE_BOUNDS.minZ + 0.1]}
+          s={[5.2, 0.22, 0.35]}
+          c={pal.trim}
+          r={0.7}
+        />
+        {/* Garage Tool Cabinet & Spare Wheel */}
+        <Part p={[11.6, 0, 2.1]} s={[0.7, 1.35, 1.1]} c="#c44536" r={0.6} />
+        <Part p={[8.2, 0.4, 1.7]} s={[0.55, 0.72, 0.32]} c="#22252b" r={0.85} />
+      </group>
+
+      {/* Warm Main Interior Light */}
+      <pointLight position={[0.5, 3.8, -0.5]} intensity={16} distance={28} color="#ffefd9" />
+
+      <Suspense fallback={null}>
+        {furniture.map((f, idx) => (
+          <group
+            key={`${f.name}-${idx}`}
+            position={[f.x, f.name === "laptop" ? 0.86 : 0, f.z]}
+            rotation-y={f.rotate ?? 0}
+          >
+            <Model
+              name={f.name}
+              size={f.size}
+              tint={f.name === "loungeSofa" ? pal.sofa : undefined}
+            />
+          </group>
+        ))}
+
+        {/* Terrace Plants (extra greenery unlocked on higher house tiers) */}
+        <group position={[terrace.maxX - 0.65, 0, terrace.minZ + 0.7]}>
+          <Model name="pottedPlant" size={[0.72, 1.35, 0.72]} />
+        </group>
+        {s.house >= 1 && (
+          <group position={[terrace.maxX - 0.65, 0, 0.55]}>
+            <Model name="pottedPlant" size={[0.78, 1.45, 0.78]} />
+          </group>
+        )}
+
+        {/* Parked Ride Tier Inside Garage Bay */}
+        {activeRide && (
+          <group position={[10.2, 0.02, 3.6]} rotation-y={-Math.PI / 2} scale={0.74}>
+            <RideVisual kind={activeRide.kind} />
+          </group>
+        )}
+
+        {s.decor.map((d) => {
+          if (d.kind === "rug") {
+            return (
+              <mesh
+                key={d.id}
+                position={[d.x, 0.018, d.z]}
+                rotation-x={-Math.PI / 2}
+                rotation-z={d.rotation}
+              >
+                <planeGeometry args={[1.6, 1.2]} />
+                <meshStandardMaterial color={pal.accent} roughness={0.96} />
+              </mesh>
+            );
+          }
+          const modelName =
+            d.kind === "plant"
+              ? "pottedPlant"
+              : d.kind === "lamp"
+                ? "lampRoundFloor"
+                : d.kind === "armchair"
+                  ? "chair"
+                  : d.kind === "bookshelf"
+                    ? "bookcaseClosedDoors"
+                    : d.kind === "table"
+                      ? "table"
+                      : "bear";
+          const size: [number, number, number] =
+            d.kind === "lamp"
+              ? [0.55, 1.75, 0.55]
+              : d.kind === "bookshelf"
+                ? [1.1, 1.9, 0.6]
+                : d.kind === "table"
+                  ? [1.0, 0.65, 0.8]
+                  : d.kind === "armchair"
+                    ? [0.85, 0.95, 0.85]
+                    : [0.7, 1.0, 0.7];
+          return (
+            <group key={d.id} position={[d.x, 0, d.z]} rotation-y={d.rotation}>
+              <Model
+                name={modelName}
+                size={size}
+                tint={d.kind === "armchair" ? pal.sofa : undefined}
+              />
+            </group>
+          );
+        })}
+      </Suspense>
+    </group>
+  );
 }

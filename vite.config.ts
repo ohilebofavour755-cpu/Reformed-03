@@ -16,6 +16,28 @@ export default defineConfig({
     server: { entry: "server" },
   },
   vite: {
+    resolve: {
+      dedupe: ["three"],
+    },
+    optimizeDeps: {
+      include: [
+        "three",
+        "three/examples/jsm/utils/BufferGeometryUtils.js",
+        "three/examples/jsm/utils/SkeletonUtils.js",
+        "@react-three/fiber",
+        "@react-three/drei",
+        "zustand",
+        "zustand/middleware",
+        "lucide-react",
+        "@radix-ui/react-slot",
+        "class-variance-authority",
+        "clsx",
+        "tailwind-merge",
+        "@tanstack/react-query",
+        "@tanstack/react-router",
+        "@tanstack/react-store",
+      ],
+    },
     server: {
       host: "0.0.0.0",
       port: 3000,
