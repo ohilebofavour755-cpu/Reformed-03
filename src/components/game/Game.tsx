@@ -416,7 +416,7 @@ function Player() {
     g.current.visible = !inCarOrEscort;
     const riderLift = vehicle?.kind === "moto" ? 0.38 : vehicle?.kind === "bike" ? 0.3 : 0;
     g.current.position.set(p.x, p.y + riderLift, p.z);
-    g.current.rotation.set(p.swim ? 1.35 : 0, p.heading, 0, "YXZ");
+    g.current.rotation.set(0, p.heading, 0, "YXZ");
   });
   void version;
   if (!look) return null;

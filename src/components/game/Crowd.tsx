@@ -50,7 +50,8 @@ function GlbNpcInstance({ npc, tpl }: { npc: Npc; tpl: GlbTemplate }) {
     const cloned = cloneGlbTemplate(tpl);
     const anim = createCharacterAnimator(cloned, tpl, npc.phase + npc.id * 0.37);
     return { cloneRoot: cloned, animator: anim };
-  }, [tpl, npc.id, npc.phase]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tpl, npc.id]);
 
   useEffect(() => {
     return () => {
