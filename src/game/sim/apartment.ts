@@ -69,10 +69,10 @@ export const STATIONS: {
 }[] = [
   { id: "bed", title: "Bed", x: -4.7, z: -3.6, hx: 1.25, hz: 1.9 },
   { id: "sofa", title: "Living Sofa", x: -5.1, z: -0.2, hx: 1.3, hz: 0.6 },
-  { id: "kitchen", title: "Kitchen", x: 1.2, z: -5.0, hx: 1.8, hz: 0.65 },
-  { id: "fridge", title: "Fridge", x: 4.1, z: -5.0, hx: 0.65, hz: 0.65 },
+  { id: "kitchen", title: "Kitchen", x: 1.25, z: -5.0, hx: 2.1, hz: 0.65 },
+  { id: "fridge", title: "Fridge", x: 4.15, z: -5.0, hx: 0.6, hz: 0.65 },
   { id: "dining", title: "Dining table", x: 2.8, z: -0.5, hx: 1.05, hz: 0.75 },
-  { id: "desk", title: "Workspace", x: 3.3, z: 3.2, hx: 0.65, hz: 1.1 },
+  { id: "desk", title: "Workspace", x: 3.35, z: 3.2, hx: 0.6, hz: 1.1 },
   { id: "wardrobe", title: "3D Wardrobe Closet", x: -1.7, z: -5.3, hx: 1.05, hz: 0.45 },
   { id: "bathroom", title: "Bathroom", x: -6.05, z: 4.95, hx: 0.5, hz: 0.55 },
   { id: "terrace", title: "Terrace Lounge", x: 9.4, z: -3.7, hx: 0.75, hz: 0.75 },
@@ -114,7 +114,7 @@ export const APARTMENT_SEATS: Record<string, SeatSnap> = {
   dining: {
     id: "dining",
     title: "Dining Chair",
-    seatX: 1.55,
+    seatX: 1.42,
     seatZ: -0.5,
     heading: Math.PI / 2,
     sitY: 0.02,
@@ -125,7 +125,7 @@ export const APARTMENT_SEATS: Record<string, SeatSnap> = {
   desk: {
     id: "desk",
     title: "Workspace Chair",
-    seatX: 2.25,
+    seatX: 2.2,
     seatZ: 3.2,
     heading: Math.PI / 2,
     sitY: 0.02,

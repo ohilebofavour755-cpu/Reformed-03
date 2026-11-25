@@ -14,18 +14,23 @@ export type GlbRoleKey =
   | "trampoline"
   | "bicyclenpc";
 
-// Serve all 10 .glb files directly from public/
+const REMOTE_GLB_BASE = "https://ohilebofavour755-cpu.github.io/Reformed-03";
+const FETCH_TIMEOUT_MS = 4000;
+const RETRY_COOLDOWN_MS = 4000;
+const MAX_REMOTE_CONCURRENT = 2;
+
+// Serve 4 local .glb files from public/ and load the 6 remote .glb files directly from GitHub Pages
 export const GLB_PUBLIC_URLS: Record<GlbRoleKey, string[]> = {
-  maleplayer: ["/Maleplayer.glb"],
-  fplayer: ["/Fplayer.glb"],
+  maleplayer: [`${REMOTE_GLB_BASE}/Maleplayer.glb`],
+  fplayer: [`${REMOTE_GLB_BASE}/Fplayer.glb`],
   police: ["/police.glb", "/Police.glb"],
-  mannpc: ["/Mannpc.glb"],
-  femalenpc: ["/Femalenpc.glb"],
-  ch: ["/C%26h.glb", "/C&h.glb"],
+  mannpc: [`${REMOTE_GLB_BASE}/Mannpc.glb`],
+  femalenpc: [`${REMOTE_GLB_BASE}/Femalenpc.glb`],
+  ch: [`${REMOTE_GLB_BASE}/C%26h.glb`, `${REMOTE_GLB_BASE}/C&h.glb`],
   beachmale: ["/Beachmale.glb"],
   beach: ["/Beach.glb"],
   trampoline: ["/trampoline.glb"],
-  bicyclenpc: ["/bicyclenpc.glb"],
+  bicyclenpc: [`${REMOTE_GLB_BASE}/bicyclenpc.glb`],
 };
 
 const TARGET_HEIGHT: Record<GlbRoleKey, number> = {
@@ -41,30 +46,27 @@ const TARGET_HEIGHT: Record<GlbRoleKey, number> = {
   bicyclenpc: 1.55,
 };
 
-const REAL_GLB_ALIAS: Record<GlbRoleKey, GlbRoleKey[]> = {
-  maleplayer: ["beachmale", "police", "beach"],
-  fplayer: ["beach", "beachmale"],
-  police: ["beachmale", "beach"],
-  mannpc: ["beachmale", "beach"],
-  femalenpc: ["beach", "beachmale"],
-  ch: ["beach", "beachmale"],
-  beachmale: ["beach"],
-  beach: ["beachmale"],
-  trampoline: ["beach"],
-  bicyclenpc: ["beachmale", "beach"],
-};
-
 export interface GlbTemplate {
   key: GlbRoleKey;
   url: string;
   scene: THREE.Group;
   animations: THREE.AnimationClip[];
   height: number;
+  protoGeometries: Set<THREE.BufferGeometry>;
+  protoMaterials: Set<THREE.Material>;
 }
 
-const cache = new Map<GlbRoleKey, GlbTemplate | null>();
+const cache = new Map<GlbRoleKey, GlbTemplate>();
+const failedAt = new Map<GlbRoleKey, number>();
 const inflight = new Map<GlbRoleKey, Promise<GlbTemplate | null>>();
 const listeners = new Set<() => void>();
+
+type QueueTask = {
+  key: GlbRoleKey;
+  run: () => void;
+};
+const remoteQueue: QueueTask[] = [];
+let activeRemoteCount = 0;
 
 const _tmpBox = new THREE.Box3();
 const _tmpDim = new THREE.Vector3();
@@ -75,6 +77,7 @@ let sharedLoader: GLTFLoader | null = null;
 function getLoader(): GLTFLoader {
   if (sharedLoader) return sharedLoader;
   const loader = new GLTFLoader();
+  loader.setCrossOrigin("anonymous");
   // Support KHR_materials_pbrSpecularGlossiness (used by police.glb) cleanly in modern Three.js
   loader.register((parser) => ({
     name: "KHR_materials_pbrSpecularGlossiness",
@@ -115,41 +118,66 @@ function getLoader(): GLTFLoader {
   return loader;
 }
 
-type ProbeResult = { ok: false } | { ok: true; url: string; fullBuffer?: ArrayBuffer };
+function isRemoteUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
 
-async function probeGlbUrl(url: string): Promise<ProbeResult> {
-  if (typeof window === "undefined") return { ok: false };
+function scheduleRemote<T>(key: GlbRoleKey, priority: boolean, work: () => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const start = () => {
+      activeRemoteCount++;
+      work()
+        .then(resolve, reject)
+        .finally(() => {
+          activeRemoteCount = Math.max(0, activeRemoteCount - 1);
+          const next = remoteQueue.shift();
+          if (next) next.run();
+        });
+    };
+
+    if (activeRemoteCount < MAX_REMOTE_CONCURRENT) {
+      start();
+    } else if (priority) {
+      remoteQueue.unshift({ key, run: start });
+    } else {
+      remoteQueue.push({ key, run: start });
+    }
+  });
+}
+
+async function fetchGlbBuffer(url: string): Promise<ArrayBuffer | null> {
+  if (typeof window === "undefined") return null;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { headers: { Range: "bytes=0-15" } });
-    if (!res.ok) return { ok: false };
+    // Standard fetch(url) with zero custom headers so GitHub Pages never rejects or stalls on CORS preflight
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) return null;
     const ct = (res.headers.get("content-type") ?? "").toLowerCase();
-    if (ct.includes("text/html") || ct.includes("application/xhtml")) return { ok: false };
-    const buf = await res.arrayBuffer();
-    if (buf.byteLength < 4) return { ok: false };
-    const bytes = new Uint8Array(buf);
+    if (ct.includes("text/html") || ct.includes("application/xhtml")) return null;
+    const buffer = await res.arrayBuffer();
+    if (buffer.byteLength < 12) return null;
+    const bytes = new Uint8Array(buffer, 0, 4);
     const isGlbMagic =
       bytes[0] === 0x67 && bytes[1] === 0x6c && bytes[2] === 0x54 && bytes[3] === 0x46;
     const isJson = bytes[0] === 0x7b;
-    if (!isGlbMagic && !isJson) return { ok: false };
-    // If server ignored Range and returned the full binary (200), reuse the buffer directly
-    if (res.status === 200 && buf.byteLength > 256 && isGlbMagic) {
-      return { ok: true, url, fullBuffer: buf };
-    }
-    return { ok: true, url };
+    return isGlbMagic || isJson ? buffer : null;
   } catch {
-    return { ok: false };
+    return null;
+  } finally {
+    window.clearTimeout(timer);
   }
 }
 
-async function resolveGlbProbe(key: GlbRoleKey): Promise<ProbeResult> {
-  for (const url of GLB_PUBLIC_URLS[key]) {
-    const probe = await probeGlbUrl(url);
-    if (probe.ok) return probe;
-  }
-  return { ok: false };
-}
-
-function normalizeScene(raw: THREE.Group, targetHeight: number, key: GlbRoleKey): THREE.Group {
+function normalizeScene(
+  raw: THREE.Group,
+  targetHeight: number,
+  key: GlbRoleKey,
+): {
+  scene: THREE.Group;
+  protoGeometries: Set<THREE.BufferGeometry>;
+  protoMaterials: Set<THREE.Material>;
+} {
   raw.updateMatrixWorld(true);
   _tmpBox.setFromObject(raw);
   _tmpBox.getSize(_tmpDim);
@@ -175,18 +203,36 @@ function normalizeScene(raw: THREE.Group, targetHeight: number, key: GlbRoleKey)
     raw.position.y - _tmpBox.min.y * s,
     raw.position.z - _tmpCenter.z * s,
   );
+
+  const protoGeometries = new Set<THREE.BufferGeometry>();
+  const protoMaterials = new Set<THREE.Material>();
+  const isMobile =
+    typeof window !== "undefined" &&
+    (window.innerWidth < 768 || window.matchMedia?.("(pointer: coarse)")?.matches === true);
+
   raw.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {
       obj.castShadow = false;
       obj.receiveShadow = false;
       obj.frustumCulled = !(obj instanceof THREE.SkinnedMesh);
+      if (obj.geometry instanceof THREE.BufferGeometry) protoGeometries.add(obj.geometry);
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const m of mats) {
+        if (!m) continue;
+        protoMaterials.add(m);
+        if (isMobile && m instanceof THREE.MeshStandardMaterial) {
+          if (m.map) m.map.anisotropy = 1;
+          if (m.normalMap) m.normalMap.anisotropy = 1;
+          if (m.roughnessMap) m.roughnessMap.anisotropy = 1;
+        }
+      }
     }
   });
 
   const wrapper = new THREE.Group();
   wrapper.add(raw);
   wrapper.updateMatrixWorld(true);
-  return wrapper;
+  return { scene: wrapper, protoGeometries, protoMaterials };
 }
 
 export function getCachedGlb(key: GlbRoleKey): GlbTemplate | null {
@@ -194,13 +240,7 @@ export function getCachedGlb(key: GlbRoleKey): GlbTemplate | null {
 }
 
 export function getCachedGlbWithFallback(key: GlbRoleKey): GlbTemplate | null {
-  const exact = cache.get(key);
-  if (exact) return exact;
-  for (const alt of REAL_GLB_ALIAS[key]) {
-    const found = cache.get(alt);
-    if (found) return found;
-  }
-  return null;
+  return cache.get(key) ?? null;
 }
 
 export function getGlbAvailability(): { available: GlbRoleKey[]; missing: GlbRoleKey[] } {
@@ -208,45 +248,70 @@ export function getGlbAvailability(): { available: GlbRoleKey[]; missing: GlbRol
   const available: GlbRoleKey[] = [];
   const missing: GlbRoleKey[] = [];
   for (const k of keys) {
-    if (cache.get(k)) available.push(k);
+    if (cache.has(k)) available.push(k);
     else missing.push(k);
   }
   return { available, missing };
 }
 
-export function ensureGlbLoaded(key: GlbRoleKey): Promise<GlbTemplate | null> {
-  if (cache.has(key)) return Promise.resolve(cache.get(key) ?? null);
+export function ensureGlbLoaded(key: GlbRoleKey, priority = false): Promise<GlbTemplate | null> {
+  const cached = cache.get(key);
+  if (cached) return Promise.resolve(cached);
+
   const existing = inflight.get(key);
   if (existing) return existing;
 
+  const lastFail = failedAt.get(key);
+  if (lastFail && Date.now() - lastFail < RETRY_COOLDOWN_MS) {
+    return Promise.resolve(null);
+  }
+
   const job = (async () => {
-    const probe = await resolveGlbProbe(key);
-    if (!probe.ok) {
-      cache.set(key, null);
-      listeners.forEach((fn) => fn());
+    const urls = GLB_PUBLIC_URLS[key];
+    const hasRemote = urls.some(isRemoteUrl);
+    const runFetchAndParse = async (): Promise<GlbTemplate | null> => {
+      for (const url of urls) {
+        const buffer = await fetchGlbBuffer(url);
+        if (!buffer) continue;
+        try {
+          const gltf = await getLoader().parseAsync(buffer, "");
+          const height = TARGET_HEIGHT[key];
+          const { scene, protoGeometries, protoMaterials } = normalizeScene(
+            gltf.scene,
+            height,
+            key,
+          );
+          const animations = (gltf.animations ?? []).map((clip) => clip.clone().optimize());
+          return {
+            key,
+            url,
+            scene,
+            animations,
+            height,
+            protoGeometries,
+            protoMaterials,
+          };
+        } catch {
+          // Try next candidate URL if parsing failed
+        }
+      }
       return null;
-    }
+    };
+
     try {
-      const loader = getLoader();
-      const gltf = probe.fullBuffer
-        ? await loader.parseAsync(probe.fullBuffer, probe.url)
-        : await loader.loadAsync(probe.url);
-      const height = TARGET_HEIGHT[key];
-      const scene = normalizeScene(gltf.scene, height, key);
-      const animations = (gltf.animations ?? []).map((clip) => clip.clone().optimize());
-      const tpl: GlbTemplate = {
-        key,
-        url: probe.url,
-        scene,
-        animations,
-        height,
-      };
-      cache.set(key, tpl);
-      listeners.forEach((fn) => fn());
-      return tpl;
+      const tpl = hasRemote
+        ? await scheduleRemote(key, priority, runFetchAndParse)
+        : await runFetchAndParse();
+      if (tpl) {
+        failedAt.delete(key);
+        cache.set(key, tpl);
+        listeners.forEach((fn) => fn());
+        return tpl;
+      }
+      failedAt.set(key, Date.now());
+      return null;
     } catch {
-      cache.set(key, null);
-      listeners.forEach((fn) => fn());
+      failedAt.set(key, Date.now());
       return null;
     } finally {
       inflight.delete(key);
@@ -257,9 +322,29 @@ export function ensureGlbLoaded(key: GlbRoleKey): Promise<GlbTemplate | null> {
   return job;
 }
 
-export function preloadAllCharacterGlbs() {
-  const keys = Object.keys(GLB_PUBLIC_URLS) as GlbRoleKey[];
-  for (const k of keys) void ensureGlbLoaded(k);
+export function preloadCharacterCreateGlbs(selectedKey: GlbRoleKey = "fplayer") {
+  void ensureGlbLoaded(selectedKey, true);
+}
+
+export function preloadCityNpcGlbs() {
+  const ordered: GlbRoleKey[] = [
+    "beachmale",
+    "beach",
+    "police",
+    "trampoline",
+    "mannpc",
+    "femalenpc",
+    "ch",
+    "bicyclenpc",
+  ];
+  for (const k of ordered) {
+    void ensureGlbLoaded(k, false);
+  }
+}
+
+export function preloadAllCharacterGlbs(priorityKey?: GlbRoleKey) {
+  if (priorityKey) void ensureGlbLoaded(priorityKey, true);
+  preloadCityNpcGlbs();
 }
 
 export function subscribeGlbRegistry(cb: () => void): () => void {
@@ -271,6 +356,27 @@ export function subscribeGlbRegistry(cb: () => void): () => void {
 
 export function cloneGlbTemplate(tpl: GlbTemplate): THREE.Group {
   return skeletonClone(tpl.scene) as THREE.Group;
+}
+
+export function disposeClonedCharacter(
+  clonedRoot: THREE.Group,
+  tpl: GlbTemplate,
+  animator: CharacterAnimator,
+) {
+  animator.dispose();
+  clonedRoot.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) {
+      if (obj.geometry instanceof THREE.BufferGeometry && !tpl.protoGeometries.has(obj.geometry)) {
+        obj.geometry.dispose();
+      }
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const m of mats) {
+        if (m && !tpl.protoMaterials.has(m)) {
+          m.dispose();
+        }
+      }
+    }
+  });
 }
 
 export type AnimIntent = "idle" | "walk" | "run" | "dance" | "sit" | "swim" | "bounce";
@@ -344,22 +450,30 @@ export function createCharacterAnimator(
     }
   }
 
-  // Optional skeletal bone rig refs when no animation clips exist in the .glb
+  // Optional multi-joint skeletal bone rig refs when no animation clips exist in the .glb
   const bones = !mixer
     ? {
-        spine: findBone(clonedRoot, /spine1|spine/i),
+        hips: findBone(clonedRoot, /hips|pelvis|root/i),
+        spine: findBone(clonedRoot, /spine1|spine2|chest|spine/i),
         head: findBone(clonedRoot, /head/i),
-        leftArm: findBone(clonedRoot, /left.*arm|upperarm_l|arm_l|l_upperarm/i),
-        rightArm: findBone(clonedRoot, /right.*arm|upperarm_r|arm_r|r_upperarm/i),
+        leftArm: findBone(clonedRoot, /left.*arm|upperarm_l|arm_l|l_upperarm|shoulder_l/i),
+        rightArm: findBone(clonedRoot, /right.*arm|upperarm_r|arm_r|r_upperarm|shoulder_r/i),
         leftForeArm: findBone(clonedRoot, /left.*forearm|lowerarm_l|forearm_l|l_forearm/i),
         rightForeArm: findBone(clonedRoot, /right.*forearm|lowerarm_r|forearm_r|r_forearm/i),
-        leftLeg: findBone(clonedRoot, /left.*upleg|thigh_l|leg_l|l_thigh/i),
-        rightLeg: findBone(clonedRoot, /right.*upleg|thigh_r|leg_r|r_thigh/i),
-        leftShin: findBone(clonedRoot, /left.*leg$|shin_l|calf_l|l_calf/i),
-        rightShin: findBone(clonedRoot, /right.*leg$|shin_r|calf_r|r_calf/i),
+        leftLeg: findBone(clonedRoot, /left.*upleg|thigh_l|upleg_l|l_thigh/i),
+        rightLeg: findBone(clonedRoot, /right.*upleg|thigh_r|upleg_r|r_thigh/i),
+        leftShin: findBone(clonedRoot, /left.*leg$|shin_l|calf_l|l_calf|knee_l/i),
+        rightShin: findBone(clonedRoot, /right.*leg$|shin_r|calf_r|r_calf|knee_r/i),
       }
     : null;
+  const hasBones = !!(
+    bones &&
+    (bones.leftLeg || bones.rightLeg || bones.leftArm || bones.rightArm || bones.spine)
+  );
+  const baseHipsY = bones?.hips?.position.y ?? 0;
+  const baseHipsRotY = bones?.hips?.rotation.y ?? 0;
   const baseSpineX = bones?.spine?.rotation.x ?? 0;
+  const baseSpineY = bones?.spine?.rotation.y ?? 0;
   const baseHeadY = bones?.head?.rotation.y ?? 0;
   const baseLArmX = bones?.leftArm?.rotation.x ?? 0;
   const baseRArmX = bones?.rightArm?.rotation.x ?? 0;
@@ -404,23 +518,33 @@ export function createCharacterAnimator(
           }
           activeKey = nextKey;
         }
-        mixer.update(
-          dt * (intent === "swim" ? 1.15 : speed > 0.2 ? Math.min(1.4, 0.8 + speed * 0.08) : 0.85),
-        );
+        const timeScale =
+          intent === "swim"
+            ? 1.15
+            : intent === "walk" || intent === "run"
+              ? Math.max(0.65, Math.min(1.6, speed / 3.6))
+              : 0.9;
+        mixer.update(dt * timeScale);
         if (innerGroup) {
           innerGroup.position.y = 0;
+          innerGroup.scale.set(1, 1, 1);
           innerGroup.rotation.set(intent === "swim" ? 1.35 : 0, 0, 0);
         }
         return;
       }
 
-      const moveAmp = speed > 0.15 ? Math.min(1, speed / 3.5) : 0;
+      const moveAmp = speed > 0.15 ? Math.min(1, speed / 3.8) : 0;
+      const isRun = intent === "run" || speed > 4.6;
+      const strideGain = isRun ? 1.25 : 1.0;
       const swing = Math.sin(phase);
+      const oppSwing = -swing;
       const dampLambda = 14;
 
-      // Animate skeletal bones smoothly and upright if the .glb carries a rig without clips
-      if (bones && (bones.leftLeg || bones.rightLeg || bones.leftArm || bones.rightArm)) {
+      if (bones && hasBones) {
+        let targetHipsY = baseHipsY;
+        let targetHipsRotY = baseHipsRotY;
         let targetSpineX = baseSpineX;
+        let targetSpineY = baseSpineY;
         let targetHeadY = baseHeadY;
         let targetLArmX = baseLArmX;
         let targetRArmX = baseRArmX;
@@ -441,38 +565,78 @@ export function createCharacterAnimator(
           targetSpineX = baseSpineX + 0.05;
         } else if (intent === "dance") {
           const d = Math.sin(t * 6.5 + seedOffset);
-          targetLArmX = baseLArmX - 0.75 + d * 0.45;
-          targetRArmX = baseRArmX - 0.75 - d * 0.45;
-          targetLForeX = baseLForeX - 0.45;
-          targetRForeX = baseRForeX - 0.45;
-          targetLLegX = baseLLegX + d * 0.18;
-          targetRLegX = baseRLegX - d * 0.18;
-          targetSpineX = baseSpineX + Math.sin(t * 13) * 0.06;
-          targetHeadY = baseHeadY + d * 0.12;
+          targetLArmX = baseLArmX - 0.72 + d * 0.42;
+          targetRArmX = baseRArmX - 0.72 - d * 0.42;
+          targetLForeX = baseLForeX - 0.48;
+          targetRForeX = baseRForeX - 0.48;
+          targetLLegX = baseLLegX + d * 0.16;
+          targetRLegX = baseRLegX - d * 0.16;
+          targetSpineY = baseSpineY + d * 0.14;
+          targetSpineX = baseSpineX + Math.sin(t * 13) * 0.04;
+          targetHeadY = baseHeadY + d * 0.1;
         } else if (intent === "swim") {
           const stroke = Math.sin(t * 5.2 + seedOffset);
           targetLArmX = baseLArmX - 1.4 + stroke * 0.75;
           targetRArmX = baseRArmX - 1.4 - stroke * 0.75;
           targetLLegX = baseLLegX + stroke * 0.45;
           targetRLegX = baseRLegX - stroke * 0.45;
+        } else if (moveAmp > 0.05) {
+          // Multi-joint human locomotion: opposite thigh/hip swing, knee bend on backswing,
+          // counter-rotating upper-arm/shoulder swing, elbow bend, and subtle torso twist
+          const legAmp = 0.56 * strideGain * moveAmp;
+          const armAmp = 0.44 * strideGain * moveAmp;
+          targetLLegX = baseLLegX + swing * legAmp;
+          targetRLegX = baseRLegX + oppSwing * legAmp;
+          // Knee bends positively during backswing / swing recovery
+          targetLShinX = baseLShinX + Math.max(0, -swing) * 0.68 * strideGain * moveAmp;
+          targetRShinX = baseRShinX + Math.max(0, -oppSwing) * 0.68 * strideGain * moveAmp;
+          // Opposite upper arm swings forward with opposite leg
+          targetLArmX = baseLArmX - swing * armAmp;
+          targetRArmX = baseRArmX - oppSwing * armAmp;
+          targetLForeX = baseLForeX - (0.22 + Math.max(0, -swing) * 0.35) * moveAmp;
+          targetRForeX = baseRForeX - (0.22 + Math.max(0, -oppSwing) * 0.35) * moveAmp;
+          // Subtle counter-rotation of hips & spine
+          targetHipsRotY = baseHipsRotY + swing * 0.055 * moveAmp;
+          targetSpineY = baseSpineY - swing * 0.065 * moveAmp;
+          targetSpineX = baseSpineX + (isRun ? 0.09 : 0.03) * moveAmp;
+          targetHipsY = baseHipsY + Math.abs(Math.cos(phase)) * 0.022 * moveAmp;
         } else {
-          const breath = Math.sin(t * 2.1 + seedOffset) * 0.03;
-          targetLLegX = baseLLegX + swing * 0.55 * moveAmp;
-          targetRLegX = baseRLegX - swing * 0.55 * moveAmp;
-          targetLShinX = baseLShinX + Math.max(0, -swing) * 0.45 * moveAmp;
-          targetRShinX = baseRShinX + Math.max(0, swing) * 0.45 * moveAmp;
-          targetLArmX = baseLArmX - swing * 0.45 * moveAmp + breath;
-          targetRArmX = baseRArmX + swing * 0.45 * moveAmp - breath;
-          targetSpineX = baseSpineX + 0.04 * moveAmp;
+          // Smooth idle breathing when stopped
+          const breath = Math.sin(t * 2.1 + seedOffset);
+          targetSpineX = baseSpineX + breath * 0.018;
+          targetLArmX = baseLArmX + breath * 0.022;
+          targetRArmX = baseRArmX - breath * 0.022;
+          targetHeadY = baseHeadY + Math.sin(t * 0.8 + seedOffset) * 0.035;
         }
 
-        if (bones.spine)
+        if (bones.hips) {
+          bones.hips.position.y = THREE.MathUtils.damp(
+            bones.hips.position.y,
+            targetHipsY,
+            dampLambda,
+            dt,
+          );
+          bones.hips.rotation.y = THREE.MathUtils.damp(
+            bones.hips.rotation.y,
+            targetHipsRotY,
+            dampLambda,
+            dt,
+          );
+        }
+        if (bones.spine) {
           bones.spine.rotation.x = THREE.MathUtils.damp(
             bones.spine.rotation.x,
             targetSpineX,
             dampLambda,
             dt,
           );
+          bones.spine.rotation.y = THREE.MathUtils.damp(
+            bones.spine.rotation.y,
+            targetSpineY,
+            dampLambda,
+            dt,
+          );
+        }
         if (bones.head)
           bones.head.rotation.y = THREE.MathUtils.damp(
             bones.head.rotation.y,
@@ -544,27 +708,27 @@ export function createCharacterAnimator(
           innerGroup.rotation.set(0, 0, 0);
           return;
         }
+        // Keep characters strictly upright with zero plastic-toy side rocking/tilting
         const strideBob =
           intent === "dance"
-            ? Math.abs(Math.sin(t * 7.2 + seedOffset)) * 0.055
-            : intent === "sit"
+            ? Math.abs(Math.sin(t * 6.8 + seedOffset)) * 0.035
+            : hasBones || intent === "sit"
               ? 0
-              : Math.abs(swing) * 0.04 * moveAmp;
-        const swayZ =
-          intent === "dance"
-            ? Math.sin(t * 6.5 + seedOffset) * 0.06
-            : intent === "sit"
-              ? 0
-              : swing * 0.028 * moveAmp;
+              : Math.abs(Math.sin(phase)) * 0.015 * moveAmp;
+        const grooveYaw = intent === "dance" ? Math.sin(t * 3.4 + seedOffset) * 0.14 : 0;
         const leanX = intent === "swim" ? 1.35 : 0;
-        const breathScale = 1 + Math.sin(t * 2.2 + seedOffset) * 0.008;
-        innerGroup.scale.set(1, breathScale, 1);
+        const idleBreath =
+          moveAmp < 0.05 && intent === "idle" ? 1 + Math.sin(t * 2.0 + seedOffset) * 0.004 : 1;
+        innerGroup.scale.set(1, idleBreath, 1);
         innerGroup.position.y = strideBob;
-        innerGroup.rotation.set(leanX, 0, swayZ);
+        innerGroup.rotation.set(leanX, grooveYaw, 0);
       }
     },
     dispose() {
-      mixer?.stopAllAction();
+      if (mixer) {
+        mixer.stopAllAction();
+        mixer.uncacheRoot(clonedRoot);
+      }
     },
   };
 }

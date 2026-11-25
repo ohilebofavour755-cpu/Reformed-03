@@ -8,8 +8,9 @@ import { isMobileViewport } from "@/game/materials";
 import {
   cloneGlbTemplate,
   createCharacterAnimator,
-  getCachedGlbWithFallback,
-  preloadAllCharacterGlbs,
+  disposeClonedCharacter,
+  getCachedGlb,
+  preloadCharacterCreateGlbs,
   subscribeGlbRegistry,
   type GlbTemplate,
 } from "@/game/glbRegistry";
@@ -30,9 +31,9 @@ function PreviewGlb({ tpl, selected }: { tpl: GlbTemplate; selected: boolean }) 
 
   useEffect(() => {
     return () => {
-      animator.dispose();
+      disposeClonedCharacter(obj, tpl, animator);
     };
-  }, [animator]);
+  }, [obj, tpl, animator]);
 
   useFrame((_, raw) => {
     animator.update(
@@ -77,10 +78,15 @@ export function CharacterCreate() {
   const [mobile] = useState(isMobileViewport);
   const [version, setVersion] = useState(0);
 
+  const selectedKey = gender === "male" ? "maleplayer" : "fplayer";
+
   useEffect(() => {
-    preloadAllCharacterGlbs();
     return subscribeGlbRegistry(() => setVersion((v) => v + 1));
   }, []);
+
+  useEffect(() => {
+    preloadCharacterCreateGlbs(selectedKey);
+  }, [selectedKey]);
 
   const start = () => {
     if (!name.trim()) return;
@@ -112,6 +118,7 @@ export function CharacterCreate() {
           camera={{ position: [0, 1.1, 5.8], fov: 40 }}
           onCreated={({ camera, gl }) => {
             gl.setPixelRatio(1);
+            gl.domElement.addEventListener("webglcontextlost", (e) => e.preventDefault());
             camera.lookAt(0, 0.95, 0);
           }}
         >
@@ -121,20 +128,14 @@ export function CharacterCreate() {
           <Environment resolution={32} frames={1}>
             <Lightformer intensity={2} position={[0, 5, 3]} scale={[10, 10, 1]} />
           </Environment>
-          {(["male", "female"] as Gender[]).map((g, i) => {
-            const tpl = getCachedGlbWithFallback(g === "male" ? "maleplayer" : "fplayer");
+          {(() => {
+            const tpl = getCachedGlb(selectedKey);
             return (
-              <group
-                key={g}
-                position={[i ? 0.85 : -0.85, gender === g ? 0 : -0.05, 0]}
-                scale={gender === g ? 1.08 : 0.92}
-                rotation-y={i ? -0.25 : 0.25}
-                onClick={() => setGender(g)}
-              >
-                {tpl && <PreviewGlb tpl={tpl} selected={gender === g} />}
+              <group key={selectedKey} position={[0, 0, 0]} scale={1.12} rotation-y={0.18}>
+                {tpl && <PreviewGlb tpl={tpl} selected />}
               </group>
             );
-          })}
+          })()}
           <mesh rotation-x={-Math.PI / 2}>
             <circleGeometry args={[3, 40]} />
             <meshStandardMaterial color="#c9a46a" />

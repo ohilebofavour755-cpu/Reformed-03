@@ -26,8 +26,9 @@ import { isMobileViewport } from "@/game/materials";
 import {
   cloneGlbTemplate,
   createCharacterAnimator,
-  getCachedGlbWithFallback,
-  preloadAllCharacterGlbs,
+  disposeClonedCharacter,
+  ensureGlbLoaded,
+  getCachedGlb,
   subscribeGlbRegistry,
   type GlbTemplate,
 } from "@/game/glbRegistry";
@@ -364,9 +365,9 @@ function GlbPlayerModel({ tpl }: { tpl: GlbTemplate }) {
 
   useEffect(() => {
     return () => {
-      animator.dispose();
+      disposeClonedCharacter(root, tpl, animator);
     };
-  }, [animator]);
+  }, [root, tpl, animator]);
 
   useFrame((_, raw) => {
     const p = rt.player;
@@ -400,11 +401,14 @@ function GlbPlayerModel({ tpl }: { tpl: GlbTemplate }) {
 function Player() {
   const look = useGame((s) => s.previewLook ?? s.profile?.look ?? null);
   const gender = useGame((s) => s.profile?.gender ?? "female");
+  const playerKey = gender === "male" ? "maleplayer" : "fplayer";
   const [version, setVersion] = useState(0);
   useEffect(() => {
-    preloadAllCharacterGlbs();
     return subscribeGlbRegistry(() => setVersion((v) => v + 1));
   }, []);
+  useEffect(() => {
+    void ensureGlbLoaded(playerKey, true);
+  }, [playerKey]);
   const g = useRef<THREE.Group>(null);
   useFrame(() => {
     const p = rt.player;
@@ -420,7 +424,7 @@ function Player() {
   });
   void version;
   if (!look) return null;
-  const glbTpl = getCachedGlbWithFallback(gender === "male" ? "maleplayer" : "fplayer");
+  const glbTpl = getCachedGlb(playerKey);
   return <group ref={g}>{glbTpl && <GlbPlayerModel tpl={glbTpl} />}</group>;
 }
 
@@ -467,9 +471,17 @@ function World() {
       resolveCollision(rt.player);
     }
     const hasUpgradedCrowd =
-      saved.savedNpcs.length >= 130 && saved.savedNpcs.some((n) => n.role === "trampoline");
+      saved.savedNpcs.length >= 45 &&
+      saved.savedNpcs.length <= 105 &&
+      saved.savedNpcs.some((n) => n.role === "trampoline" && typeof n.dirX === "number");
     rt.npcs = hasUpgradedCrowd
-      ? saved.savedNpcs.map((n) => ({ ...n, talkUntil: n.talkUntil ?? 0 }))
+      ? saved.savedNpcs.map((n) => ({
+          ...n,
+          talkUntil: n.talkUntil ?? 0,
+          dirX: n.dirX ?? 0,
+          dirZ: n.dirZ ?? 1,
+          stopsLeft: n.stopsLeft ?? 3,
+        }))
       : createNpcs(rt.player.x, rt.player.z);
     rt.cars = createCars(32, rt.player.x, rt.player.z);
     const partner = useGame.getState().partner;
@@ -580,6 +592,7 @@ function World() {
             gl={{ powerPreference: "low-power", antialias: false }}
             onCreated={({ gl }) => {
               gl.setPixelRatio(1);
+              gl.domElement.addEventListener("webglcontextlost", (e) => e.preventDefault());
             }}
             camera={{
               fov: 74,

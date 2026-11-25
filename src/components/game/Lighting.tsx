@@ -63,28 +63,63 @@ export function Lighting({ shadowEnabled = false }: { shadowEnabled?: boolean })
   const { scene } = useThree();
 
   const c = useMemo(() => {
-    scene.background = new THREE.Color("#8fc7ea");
-    scene.fog = new THREE.Fog("#8fc7ea", 90, 290);
+    const initialInside = useGame.getState().inside;
+    const initColor = initialInside ? "#231b16" : "#8fc7ea";
+    scene.background = new THREE.Color(initColor);
+    scene.fog = new THREE.Fog(initColor, initialInside ? 26 : 90, initialInside ? 90 : 290);
     return {
       day: new THREE.Color("#8fc7ea"),
       dusk: new THREE.Color("#f08a5d"),
       night: new THREE.Color("#0d1733"),
+      indoorHome: new THREE.Color("#231b16"),
+      indoorClub: new THREE.Color("#140f1c"),
+      indoorOther: new THREE.Color("#1e1a17"),
       tmp: new THREE.Color(),
       warm: new THREE.Color("#ffe2b8"),
+      indoorWarm: new THREE.Color("#ffdcb3"),
       moon: new THREE.Color("#9fb4ff"),
     };
   }, [scene]);
 
   useFrame(() => {
-    const t = useGame.getState().time;
+    const st = useGame.getState();
+    const t = st.time;
     const k = daylight(t);
+    const fog = scene.fog as THREE.Fog;
+    const bg = scene.background as THREE.Color;
+
+    if (st.inside) {
+      const targetBg =
+        st.interior === "club"
+          ? c.indoorClub
+          : st.interior === "home" || !st.interior
+            ? c.indoorHome
+            : c.indoorOther;
+      bg.copy(targetBg);
+      fog.color.copy(targetBg);
+      fog.near = 26;
+      fog.far = 92;
+      scene.environmentIntensity = st.interior === "club" ? 0.35 : 0.48;
+      if (sun.current) {
+        sun.current.position.set(2, 11, 8);
+        sun.current.target.position.set(0, 0, 0);
+        sun.current.target.updateMatrixWorld();
+        sun.current.intensity = st.interior === "club" ? 0.45 : 0.9;
+        sun.current.color.copy(c.indoorWarm);
+      }
+      if (hemi.current) hemi.current.intensity = st.interior === "club" ? 0.4 : 0.65;
+      return;
+    }
+
     const dusk = Math.max(0, 1 - Math.abs(k - 0.25) * 5);
     c.tmp
       .copy(c.night)
       .lerp(c.day, k)
       .lerp(c.dusk, dusk * 0.6);
-    (scene.background as THREE.Color).copy(c.tmp);
-    (scene.fog as THREE.Fog).color.copy(c.tmp);
+    bg.copy(c.tmp);
+    fog.color.copy(c.tmp);
+    fog.near = 90;
+    fog.far = 290;
     scene.environmentIntensity = 0.25 + k * 0.75;
     const p = rt.player;
     if (sun.current) {

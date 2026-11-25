@@ -22,7 +22,7 @@ import {
   BEACH_X,
   ROAD_SAFETY_POSTS,
 } from "@/game/world";
-import { createNpcs, createCars, stepCars } from "@/game/npcs";
+import { createNpcs, stepNpcs, createCars, stepCars } from "@/game/npcs";
 import { interiorBlocked, nearInteriorStation, insidePoliceCell } from "@/game/sim/interiors";
 import { AUTOSAVE_MS, divorceState, crashResult, driveStep } from "@/game/sim/mobility";
 import { speakSubtitle } from "@/game/voice";
@@ -219,20 +219,33 @@ describe("planned life-game rules", () => {
     expect(useGame.getState().previewLook).toBeNull();
   });
 
-  it("populates 130+ busy NPCs and maps all 10 character GLBs to public/ URLs without gossip", () => {
-    expect(GLB_PUBLIC_URLS.maleplayer[0]).toBe("/Maleplayer.glb");
-    expect(GLB_PUBLIC_URLS.fplayer[0]).toBe("/Fplayer.glb");
-    expect(GLB_PUBLIC_URLS.mannpc[0]).toBe("/Mannpc.glb");
-    expect(GLB_PUBLIC_URLS.femalenpc[0]).toBe("/Femalenpc.glb");
-    expect(GLB_PUBLIC_URLS.ch).toContain("/C%26h.glb");
+  it("populates a thinned, well-spaced city crowd and maps all 10 character GLBs without gossip", () => {
+    expect(GLB_PUBLIC_URLS.maleplayer[0]).toBe(
+      "https://ohilebofavour755-cpu.github.io/Reformed-03/Maleplayer.glb",
+    );
+    expect(GLB_PUBLIC_URLS.fplayer[0]).toBe(
+      "https://ohilebofavour755-cpu.github.io/Reformed-03/Fplayer.glb",
+    );
+    expect(GLB_PUBLIC_URLS.mannpc[0]).toBe(
+      "https://ohilebofavour755-cpu.github.io/Reformed-03/Mannpc.glb",
+    );
+    expect(GLB_PUBLIC_URLS.femalenpc[0]).toBe(
+      "https://ohilebofavour755-cpu.github.io/Reformed-03/Femalenpc.glb",
+    );
+    expect(GLB_PUBLIC_URLS.ch).toContain(
+      "https://ohilebofavour755-cpu.github.io/Reformed-03/C%26h.glb",
+    );
     expect(GLB_PUBLIC_URLS.police).toContain("/police.glb");
     expect(GLB_PUBLIC_URLS.trampoline[0]).toBe("/trampoline.glb");
-    expect(GLB_PUBLIC_URLS.bicyclenpc[0]).toBe("/bicyclenpc.glb");
+    expect(GLB_PUBLIC_URLS.bicyclenpc[0]).toBe(
+      "https://ohilebofavour755-cpu.github.io/Reformed-03/bicyclenpc.glb",
+    );
     expect(GLB_PUBLIC_URLS.beachmale[0]).toBe("/Beachmale.glb");
     expect(GLB_PUBLIC_URLS.beach[0]).toBe("/Beach.glb");
 
     const npcs = createNpcs(0, 0);
-    expect(npcs.length).toBeGreaterThanOrEqual(130);
+    expect(npcs.length).toBeGreaterThanOrEqual(50);
+    expect(npcs.length).toBeLessThanOrEqual(105);
     const roles = new Set(npcs.map((n) => n.role));
     for (const r of [
       "bicyclist",
@@ -244,6 +257,15 @@ describe("planned life-game rules", () => {
       "roadsafety",
     ] as const) {
       expect(roles.has(r)).toBe(true);
+    }
+
+    // Active outdoor NPCs never spawn stacked directly on top of one another
+    const active = npcs.filter((n) => n.mode !== "off");
+    for (let i = 0; i < active.length; i++) {
+      for (let j = i + 1; j < active.length; j++) {
+        const d = Math.hypot(active[i]!.x - active[j]!.x, active[i]!.z - active[j]!.z);
+        expect(d).toBeGreaterThan(0.75);
+      }
     }
 
     enterBuilding("ink");
@@ -260,6 +282,40 @@ describe("planned life-game rules", () => {
     const acts = npcActions();
     expect(acts.some((a) => a.label.includes("Eavesdrop"))).toBe(false);
     leaveBuilding();
+  });
+
+  it("moves leaving NPCs one-way toward their exit without reversing mid-trip and separates clumped NPCs", () => {
+    const npcs = createNpcs(0, 0).slice(0, 2);
+    const [a, b] = npcs;
+    // Test committed one-way leaving trajectory
+    a!.role = "walker";
+    a!.mode = "leaving";
+    a!.x = 0;
+    a!.z = 12;
+    a!.tx = 0;
+    a!.tz = 60;
+    a!.dirX = 0;
+    a!.dirZ = 1;
+
+    // Place b right on top of a's starting point to test separation, then keep a advancing one-way
+    b!.role = "walker";
+    b!.mode = "wander";
+    b!.x = 0.1;
+    b!.z = 12.1;
+    b!.tx = -8;
+    b!.tz = 12.1;
+
+    stepNpcs([a!, b!], 0.1, 0, 0);
+    expect(Math.hypot(a!.x - b!.x, a!.z - b!.z)).toBeGreaterThan(0.15);
+
+    // Step leaving NPC forward repeatedly; z must monotonically increase toward tx/tz=60
+    let prevZ = a!.z;
+    for (let i = 0; i < 12; i++) {
+      stepNpcs([a!], 0.25, 0, 0);
+      expect(a!.mode).toBe("leaving");
+      expect(a!.z).toBeGreaterThan(prevZ);
+      prevZ = a!.z;
+    }
   });
 
   it("keeps traffic vehicles on asphalt roads and blocks FRSC road safety checkpoints", () => {

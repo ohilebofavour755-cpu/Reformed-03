@@ -6,8 +6,10 @@ import type { Npc } from "@/game/npcs";
 import {
   cloneGlbTemplate,
   createCharacterAnimator,
-  getCachedGlbWithFallback,
-  preloadAllCharacterGlbs,
+  disposeClonedCharacter,
+  ensureGlbLoaded,
+  getCachedGlb,
+  preloadCityNpcGlbs,
   subscribeGlbRegistry,
   type AnimIntent,
   type GlbRoleKey,
@@ -55,9 +57,9 @@ function GlbNpcInstance({ npc, tpl }: { npc: Npc; tpl: GlbTemplate }) {
 
   useEffect(() => {
     return () => {
-      animator.dispose();
+      disposeClonedCharacter(cloneRoot, tpl, animator);
     };
-  }, [animator]);
+  }, [cloneRoot, tpl, animator]);
 
   useFrame((_, raw) => {
     const outer = outerRef.current;
@@ -91,16 +93,22 @@ export function Crowd({ npcs }: { npcs?: Npc[] }) {
   const [version, setVersion] = useState(0);
 
   useEffect(() => {
-    preloadAllCharacterGlbs();
+    if (npcs) {
+      const needed = new Set<GlbRoleKey>();
+      for (const n of npcs) needed.add(glbKeyForNpc(n));
+      for (const k of needed) void ensureGlbLoaded(k, true);
+    } else {
+      preloadCityNpcGlbs();
+    }
     return subscribeGlbRegistry(() => setVersion((v) => v + 1));
-  }, []);
+  }, [npcs]);
 
   const glbActors = useMemo(() => {
     void version;
     const actors: { npc: Npc; tpl: GlbTemplate }[] = [];
     for (const n of sourceNpcs) {
       const key = glbKeyForNpc(n);
-      const tpl = getCachedGlbWithFallback(key);
+      const tpl = getCachedGlb(key);
       if (tpl) actors.push({ npc: n, tpl });
     }
     return actors;

@@ -3,6 +3,7 @@ import {
   BEACH_X,
   WATER_X,
   ROAD_SAFETY_POSTS,
+  chunkKind,
   landmarkCenter,
   resolveCollision,
   onAsphaltRoad,
@@ -28,6 +29,7 @@ export type Role =
 export type Mode =
   | "walk"
   | "wander"
+  | "leaving"
   | "dance"
   | "sit"
   | "idle"
@@ -66,6 +68,9 @@ export interface Npc {
   gz: number;
   ox: number;
   oz: number;
+  dirX: number;
+  dirZ: number;
+  stopsLeft: number;
   skin: string;
   hair: string;
   hairStyle: number;
@@ -173,6 +178,9 @@ function makeNpc(
     gz: 0,
     ox: 6,
     oz: 6,
+    dirX: 0,
+    dirZ: 1,
+    stopsLeft: 3 + Math.floor(Math.random() * 3),
     skin: pick(SKINS),
     hair: pick(HAIRS),
     hairStyle: g === "male" ? pick([0, 0, 1, 3]) : pick([1, 2, 2, 3]),
@@ -185,17 +193,105 @@ function nodePos(n: Npc) {
   n.tx = n.gx * B + B / 2 + n.ox;
   n.tz = n.gz * B + B / 2 + n.oz;
 }
+
+function commitLeaving(n: Npc, dist = 85) {
+  const dx = n.dirX || Math.sin(n.heading) || 0;
+  const dz = n.dirZ || Math.cos(n.heading) || 1;
+  const len = Math.hypot(dx, dz) || 1;
+  const ux = dx / len;
+  const uz = dz / len;
+  n.dirX = ux;
+  n.dirZ = uz;
+  // Keep leaving path west of ocean water unless already a beachgoer heading along coast
+  n.tx = Math.min(BEACH_X - 2, n.x + ux * dist);
+  n.tz = n.z + uz * dist;
+  if (Math.hypot(n.tx - n.x, n.tz - n.z) < 20) {
+    n.tx = n.x - 16;
+    n.tz = n.z + (uz >= 0 ? dist : -dist);
+  }
+  n.mode = "leaving";
+  n.timer = 0;
+}
+
 function nextNode(n: Npc) {
-  if (Math.random() < 0.5) n.gx += Math.random() < 0.5 ? 1 : -1;
-  else n.gz += Math.random() < 0.5 ? 1 : -1;
-  if (n.gx > 1) n.gx = 1;
+  const dx = n.dirX || 0;
+  const dz = n.dirZ || 1;
+  // Committed one-way street travel: straight (preferred) or 90-degree turn, NEVER 180-degree reverse
+  const rawDirs: [number, number][] = [
+    [dx, dz],
+    [-dz, dx],
+    [dz, -dx],
+  ];
+  const valid = rawDirs.filter(([cx, cz]) => !(cx > 0 && n.gx >= 1) && (cx !== 0 || cz !== 0));
+  const pool =
+    valid.length > 0
+      ? valid
+      : ([
+          [0, 1],
+          [0, -1],
+        ] as [number, number][]);
+  const straightValid = valid.find(([cx, cz]) => cx === dx && cz === dz);
+  const chosen =
+    straightValid && Math.random() < 0.68
+      ? straightValid
+      : pool[Math.floor(Math.random() * pool.length)]!;
+
+  n.dirX = chosen[0];
+  n.dirZ = chosen[1];
+  n.gx = Math.min(1, n.gx + chosen[0]);
+  n.gz += chosen[1];
+  n.stopsLeft = (n.stopsLeft ?? 3) - 1;
+  if (n.role === "walker" && n.stopsLeft <= 0) {
+    commitLeaving(n, 75);
+    return;
+  }
   nodePos(n);
 }
+
+function pickWanderGoal(n: Npc) {
+  const minDist = Math.max(2.2, n.ar * 0.55);
+  const fx = Math.sin(n.heading);
+  const fz = Math.cos(n.heading);
+  let bestX = n.ax;
+  let bestZ = n.az;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = (0.35 + 0.65 * Math.sqrt(Math.random())) * Math.max(2, n.ar);
+    const cx = n.ax + Math.cos(a) * r;
+    const cz = n.az + Math.sin(a) * r;
+    const dx = cx - n.x;
+    const dz = cz - n.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < minDist) continue;
+    const dot = (dx * fx + dz * fz) / dist;
+    bestX = cx;
+    bestZ = cz;
+    if (dot >= -0.15) break;
+  }
+  n.tx = bestX;
+  n.tz = bestZ;
+  const gdx = bestX - n.x;
+  const gdz = bestZ - n.z;
+  const gd = Math.hypot(gdx, gdz) || 1;
+  n.dirX = gdx / gd;
+  n.dirZ = gdz / gd;
+}
+
 function respawnWalker(n: Npc, px: number, pz: number) {
   n.gx = Math.min(1, Math.round((px - 16) / B) + Math.floor(rnd(-3, 4)));
   n.gz = Math.round((pz - 16) / B) + Math.floor(rnd(-3, 4));
   n.ox = Math.random() < 0.5 ? -6.2 : 6.2;
   n.oz = Math.random() < 0.5 ? -6.2 : 6.2;
+  const dirs: [number, number][] = [
+    [0, 1],
+    [0, -1],
+    [-1, 0],
+    ...(n.gx < 1 ? ([[1, 0]] as [number, number][]) : []),
+  ];
+  const d = pick(dirs);
+  n.dirX = d[0];
+  n.dirZ = d[1];
+  n.stopsLeft = 3 + Math.floor(Math.random() * 4);
   nodePos(n);
   n.x = n.tx;
   n.z = n.tz;
@@ -210,13 +306,17 @@ function respawnCyclist(n: Npc, px: number, pz: number) {
     const gx = Math.min(1, Math.round((px - 16) / B) + Math.floor(rnd(-2, 3)));
     n.x = gx * B + B / 2 + (dir === 0 ? -3.4 : 3.4);
     n.z = Math.round((pz - 16) / B) * B + B / 2 + rnd(-48, 48);
+    n.dirX = 0;
+    n.dirZ = dir === 0 ? 1 : -1;
     n.tx = n.x;
-    n.tz = n.z + (dir === 0 ? 32 : -32);
+    n.tz = n.z + n.dirZ * B;
   } else {
     const gz = Math.round((pz - 16) / B) + Math.floor(rnd(-2, 3));
     n.z = gz * B + B / 2 + (dir === 2 ? 3.4 : -3.4);
     n.x = Math.min(48, Math.max(-64, px + rnd(-48, 48)));
-    n.tx = dir === 2 ? Math.min(49, n.x + 32) : n.x - 32;
+    n.dirX = dir === 2 && n.x < 36 ? 1 : -1;
+    n.dirZ = 0;
+    n.tx = Math.min(49, n.x + n.dirX * B);
     n.tz = n.z;
   }
   n.heading = Math.atan2(n.tx - n.x, n.tz - n.z);
@@ -235,46 +335,47 @@ export function createNpcs(px: number, pz: number): Npc[] {
     ar: number,
     gender?: Gender,
   ) => {
-    for (let i = 0; i < count; i++) list.push(makeNpc(id++, role, base, ax, az, ar, gender));
+    for (let i = 0; i < count; i++) {
+      const npc = makeNpc(id++, role, base, ax, az, ar, gender);
+      if (base === "wander") pickWanderGoal(npc);
+      list.push(npc);
+    }
   };
 
-  // 56 brisk city pedestrians along sidewalks
-  for (let i = 0; i < 56; i++) {
+  // 24 well-spaced pedestrians spread across city sidewalks & blocks
+  for (let i = 0; i < 24; i++) {
     const n = makeNpc(id++, "walker", "walk", 0, 0, 0);
-    n.speed = rnd(1.4, 2.2);
-    respawnWalker(n, px, pz);
+    n.speed = rnd(1.4, 2.0);
+    respawnWalker(n, px + ((i % 5) - 2) * 26, pz + (Math.floor(i / 5) - 2) * 26);
     list.push(n);
   }
 
-  // 14 active bicyclists riding along asphalt road lanes & beach boardwalk avenue
-  for (let i = 0; i < 14; i++) {
+  // 6 bicyclists spaced across distinct road lanes & boardwalk
+  for (let i = 0; i < 6; i++) {
     const n = makeNpc(id++, "bicyclist", "ride", 0, 0, 0);
-    n.speed = rnd(5.5, 8.2);
-    if (i < 4) {
-      // Coastal boardwalk avenue riders near Market & Beach (x = 49.5)
+    n.speed = rnd(5.5, 7.6);
+    if (i < 2) {
       n.x = 49.5;
-      n.z = -36 + i * 24;
+      n.z = i === 0 ? -36 : 28;
+      n.dirX = 0;
+      n.dirZ = i === 0 ? 1 : -1;
       n.tx = 49.5;
-      n.tz = n.z + (i % 2 === 0 ? 36 : -36);
-      n.heading = i % 2 === 0 ? 0 : Math.PI;
+      n.tz = n.z + n.dirZ * 32;
+      n.heading = n.dirZ > 0 ? 0 : Math.PI;
     } else {
-      respawnCyclist(n, px, pz);
+      respawnCyclist(n, px + (i - 3) * 24, pz + (i % 2 === 0 ? -24 : 24));
     }
     list.push(n);
   }
 
-  // 8 trampoline bouncers (4 at City High School courtyard, 4 at Beach Chill Spot)
+  // 4 trampoline bouncers (2 at School courtyard, 2 at Beach Chill Spot)
   const school = landmarkCenter("school");
   const chill = landmarkCenter("chill");
   const trampSpots: [number, number][] = [
-    [school.x - 11.2, school.z + 7.5],
-    [school.x - 7.8, school.z + 9.2],
-    [school.x + 8.0, school.z + 9.2],
-    [school.x + 11.2, school.z + 7.5],
-    [chill.x - 1.5, chill.z - 8.5],
-    [chill.x + 2.2, chill.z - 9.2],
-    [chill.x - 1.5, chill.z + 8.5],
-    [chill.x + 2.2, chill.z + 9.2],
+    [school.x - 10.6, school.z + 8.0],
+    [school.x + 10.6, school.z + 8.0],
+    [chill.x - 1.5, chill.z - 8.8],
+    [chill.x + 2.2, chill.z + 8.8],
   ];
   trampSpots.forEach(([tx, tz], idx) => {
     const t = makeNpc(id++, "trampoline", "bounce", tx, tz, 0, "female");
@@ -287,34 +388,46 @@ export function createNpcs(px: number, pz: number): Npc[] {
     list.push(t);
   });
 
-  // Club Amapiano & nightlife district (C&h.glb babes + Beachmale.glb thugs)
+  // Thinned, spread nightlife & district visitors across sidewalks & plazas
   const club = landmarkCenter("club");
-  add(8, "hookup", "wander", club.x - 13.8, club.z - 2, 3.0, "female");
-  add(6, "hookup", "wander", chill.x + 4.0, chill.z - 3, 4.0, "female");
-  add(8, "thug", "wander", club.x - 13.8, club.z + 5, 3.0, "male");
-  add(6, "thug", "wander", chill.x + 4.5, chill.z + 4, 4.0, "male");
+  add(3, "hookup", "wander", club.x - 13.8, club.z - 2, 6.0, "female");
+  add(2, "hookup", "wander", chill.x + 4.5, chill.z - 4, 6.5, "female");
+  add(3, "thug", "wander", club.x - 13.8, club.z + 6, 6.0, "male");
+  add(2, "thug", "wander", chill.x + 4.5, chill.z + 5, 6.5, "male");
 
-  // Balogun Supermarket & commercial sidewalks
   const market = landmarkCenter("market");
-  add(12, "market", "wander", market.x, market.z + 11.2, 4.5);
+  add(4, "market", "wander", market.x, market.z + 11.4, 6.0);
   const boutique = landmarkCenter("boutique");
-  add(4, "walker", "wander", boutique.x, boutique.z + 11.2, 3.5);
+  add(3, "walker", "wander", boutique.x, boutique.z + 11.4, 5.5);
   const ink = landmarkCenter("ink");
-  add(4, "walker", "wander", ink.x, ink.z + 11.2, 3.5);
-  add(6, "school", "wander", school.x, school.z + 11.2, 4.0);
+  add(2, "walker", "wander", ink.x, ink.z + 11.4, 5.0);
+  const realtor = landmarkCenter("realtor");
+  add(2, "walker", "wander", realtor.x, realtor.z + 11.4, 5.0);
+  const dealer = landmarkCenter("dealer");
+  add(2, "walker", "wander", dealer.x, dealer.z + 11.4, 5.0);
+  add(3, "school", "wander", school.x, school.z + 11.4, 5.5);
   const church = landmarkCenter("church");
-  add(6, "church", "wander", church.x, church.z + 11.2, 4.0);
+  add(3, "church", "wander", church.x, church.z + 11.4, 5.5);
 
-  // Beach Chill Spot (Beach.glb beachgoers lounging, walking sand & swimming)
-  for (const idx of [0, 2, 4]) {
+  // Park strollers across nearby city parks
+  for (let cx = -2; cx <= 1; cx++) {
+    for (let cz = -2; cz <= 2; cz++) {
+      if (chunkKind(cx, cz) === "park") {
+        add(2, "walker", "wander", cx * B, cz * B, 7.5);
+      }
+    }
+  }
+
+  // Beach Chill Spot (seated loungers, wide sand strollers & swimmers)
+  for (const idx of [0, 4]) {
     const sitter = makeNpc(id++, "beach", "sit", chill.x + 11.4, chill.z - 10 + idx * 5, 0);
     sitter.x = chill.x + 11.4;
     sitter.z = chill.z - 10 + idx * 5;
     sitter.heading = Math.PI / 2;
     list.push(sitter);
   }
-  add(7, "beach", "wander", chill.x + 7.2, chill.z, 4.2);
-  add(6, "beach", "swim", WATER_X + 7, chill.z, 6);
+  add(4, "beach", "wander", chill.x + 7.2, chill.z, 7.2);
+  add(3, "beach", "swim", WATER_X + 7, chill.z, 7.5);
 
   // 4 FRSC Road Safety officers stationed at major intersections
   ROAD_SAFETY_POSTS.forEach((post, idx) => {
@@ -339,7 +452,7 @@ export function createNpcs(px: number, pz: number): Npc[] {
   rsExtra.pants = "#1f2937";
   list.push(rsExtra);
 
-  // 6 Police Officers (4 visibly patrolling busy streets + 2 rapid-response backup)
+  // 6 Police Officers (4 visibly patrolling spaced streets + 2 rapid-response backup)
   const patrolAnchors: [number, number][] = [
     [-32, 43],
     [0, 12],
@@ -366,6 +479,8 @@ export function createNpcs(px: number, pz: number): Npc[] {
       p.gz = Math.round((anchor[1] - 16) / B);
       p.ox = i % 2 === 0 ? -6.2 : 6.2;
       p.oz = 6.2;
+      p.dirX = i % 2 === 0 ? 1 : 0;
+      p.dirZ = i % 2 === 0 ? 0 : 1;
       nodePos(p);
       p.x = anchor[0];
       p.z = anchor[1];
@@ -379,6 +494,45 @@ export function createNpcs(px: number, pz: number): Npc[] {
   for (const n of list) {
     if (n.role === "beach" && n.base === "swim") n.x = Math.max(n.x, WATER_X + 3);
   }
+
+  // Enforce minimum initial spacing (2.6m) so street NPCs never spawn stacked or clumped
+  const isFixed = (n: Npc) =>
+    n.mode === "off" ||
+    n.mode === "sit" ||
+    n.mode === "bounce" ||
+    n.role === "roadsafety" ||
+    n.role === "trampoline";
+  for (const n of list) {
+    if (!isFixed(n) && n.mode !== "swim") resolveCollision(n);
+  }
+  for (let pass = 0; pass < 6; pass++) {
+    for (let i = 0; i < list.length; i++) {
+      const a = list[i]!;
+      if (isFixed(a)) continue;
+      for (let j = i + 1; j < list.length; j++) {
+        const b = list[j]!;
+        if (b.mode === "off") continue;
+        const dx = b.x - a.x;
+        const dz = b.z - a.z;
+        const d = Math.hypot(dx, dz);
+        if (d < 2.6) {
+          const angle = d > 0.01 ? Math.atan2(dz, dx) : (i * 1.7 + j * 0.9) % (Math.PI * 2);
+          const push = 2.6 - d + 0.15;
+          if (isFixed(b)) {
+            a.x -= Math.cos(angle) * push;
+            a.z -= Math.sin(angle) * push;
+          } else {
+            a.x -= Math.cos(angle) * (push * 0.5);
+            a.z -= Math.sin(angle) * (push * 0.5);
+            b.x += Math.cos(angle) * (push * 0.5);
+            b.z += Math.sin(angle) * (push * 0.5);
+          }
+        }
+      }
+      if (a.mode !== "swim") resolveCollision(a);
+    }
+  }
+
   return list;
 }
 
@@ -569,18 +723,30 @@ export function stepNpcs(npcs: Npc[], dt: number, px: number, pz: number): NpcEv
       case "ride": {
         const d = moveTo(n, 6.2, dt);
         if (d < 0.4 || !onAsphaltRoad(n.x, n.z, 0.5)) {
-          // Pick perpendicular or continuing asphalt avenue segment
+          // Purposeful one-way cycling along asphalt road grid (never reverses 180° mid-trip)
           const gx = Math.min(1, Math.round((n.x - 16) / B));
           const gz = Math.round((n.z - 16) / B);
-          const turnEW = Math.random() < 0.4;
-          if (turnEW) {
-            const dir = n.x > 40 ? -1 : Math.random() < 0.5 ? 1 : -1;
-            n.tz = gz * B + B / 2 + (dir > 0 ? 3.4 : -3.4);
-            n.tx = Math.min(49, n.x + dir * B);
+          const dx = n.dirX || 0;
+          const dz = n.dirZ || 1;
+          const rawDirs: [number, number][] = [
+            [dx, dz],
+            [-dz, dx],
+            [dz, -dx],
+          ];
+          const valid = rawDirs.filter(([cx]) => !(cx > 0 && n.x > 42));
+          const straight = valid.find(([cx, cz]) => cx === dx && cz === dz);
+          const chosen =
+            straight && Math.random() < 0.72
+              ? straight
+              : (valid[Math.floor(Math.random() * valid.length)] ?? [0, 1]);
+          n.dirX = chosen[0];
+          n.dirZ = chosen[1];
+          if (chosen[0] !== 0) {
+            n.tz = gz * B + B / 2 + (chosen[0] > 0 ? 3.4 : -3.4);
+            n.tx = Math.min(49, n.x + chosen[0] * B);
           } else {
-            const dir = Math.random() < 0.5 ? 1 : -1;
-            n.tx = Math.min(49.5, gx * B + B / 2 + (dir > 0 ? -3.4 : 3.4));
-            n.tz = n.z + dir * B;
+            n.tx = Math.min(49.5, gx * B + B / 2 + (chosen[1] > 0 ? -3.4 : 3.4));
+            n.tz = n.z + chosen[1] * B;
           }
         }
         if (Math.hypot(n.x - px, n.z - pz) > 130) respawnCyclist(n, px, pz);
@@ -591,19 +757,38 @@ export function stepNpcs(npcs: Npc[], dt: number, px: number, pz: number): NpcEv
         if (Math.hypot(n.x - px, n.z - pz) > 130) respawnWalker(n, px, pz);
         break;
       }
+      case "leaving": {
+        // Committed one-way commute toward exit/destination without turning around mid-trip
+        const d = moveTo(n, 1.75, dt);
+        resolveCollision(n);
+        if (d < 1.2 || Math.hypot(n.x - px, n.z - pz) > 130) {
+          if (n.role === "walker") {
+            respawnWalker(n, px, pz);
+          } else {
+            // Re-enter cleanly at outer edge of home district rather than reversing mid-trip
+            const enterAngle = Math.atan2(n.z - n.az, n.x - n.ax) + Math.PI;
+            n.x = n.ax + Math.cos(enterAngle) * Math.max(2, n.ar);
+            n.z = n.az + Math.sin(enterAngle) * Math.max(2, n.ar);
+            n.stopsLeft = 3 + Math.floor(Math.random() * 3);
+            n.mode = n.base === "leaving" ? "walk" : n.base;
+            pickWanderGoal(n);
+            resolveCollision(n);
+          }
+        }
+        break;
+      }
       case "wander": {
         n.timer -= dt;
-        const d = moveTo(n, n.role === "hookup" || n.role === "thug" ? 0.85 : 1.15, dt);
-        if (d < 0.2 && n.timer <= 0) {
-          if (Math.random() < 0.45) {
+        const d = moveTo(n, n.role === "hookup" || n.role === "thug" ? 0.95 : 1.2, dt);
+        if (d < 0.3 && n.timer <= 0) {
+          n.stopsLeft = (n.stopsLeft ?? 3) - 1;
+          if (n.stopsLeft <= 0 && n.role !== "police") {
+            commitLeaving(n, 65);
+          } else {
             n.mode = "idle";
-            n.timer = rnd(1.5, 4.5);
+            n.timer = rnd(3.0, 6.5);
+            pickWanderGoal(n);
           }
-          const a = Math.random() * 6.28;
-          const r = Math.sqrt(Math.random()) * n.ar;
-          n.tx = n.ax + Math.cos(a) * r;
-          n.tz = n.az + Math.sin(a) * r;
-          n.timer = rnd(0, 2);
         }
         break;
       }
@@ -617,7 +802,10 @@ export function stepNpcs(npcs: Npc[], dt: number, px: number, pz: number): NpcEv
         )
           break;
         n.timer -= dt;
-        if (n.timer <= 0) n.mode = n.base;
+        if (n.timer <= 0) {
+          n.mode = n.base;
+          if (n.mode === "wander") pickWanderGoal(n);
+        }
         break;
       }
       case "stagger": {
@@ -694,6 +882,52 @@ export function stepNpcs(npcs: Npc[], dt: number, px: number, pz: number): NpcEv
         : 0;
     n.phase += dt * n.speed * 2.4;
   }
+
+  // Lightweight pairwise separation check to keep crowds breathable & prevent clumping
+  const MIN_SEP = 1.05;
+  const canMove = (n: Npc) =>
+    n.mode !== "off" &&
+    n.mode !== "sit" &&
+    n.mode !== "bounce" &&
+    n.mode !== "stagger" &&
+    n.mode !== "hold" &&
+    n.role !== "roadsafety" &&
+    n.role !== "trampoline" &&
+    n.role !== "staff" &&
+    n.role !== "bartender";
+
+  for (let i = 0; i < npcs.length; i++) {
+    const a = npcs[i]!;
+    if (a.mode === "off") continue;
+    for (let j = i + 1; j < npcs.length; j++) {
+      const b = npcs[j]!;
+      if (b.mode === "off") continue;
+      const dx = b.x - a.x;
+      const dz = b.z - a.z;
+      if (Math.abs(dx) >= MIN_SEP || Math.abs(dz) >= MIN_SEP) continue;
+      const d = Math.hypot(dx, dz);
+      if (d >= MIN_SEP) continue;
+      const aMov = canMove(a);
+      const bMov = canMove(b);
+      if (!aMov && !bMov) continue;
+      const nx = d > 0.001 ? dx / d : Math.cos((i + j) * 1.3);
+      const nz = d > 0.001 ? dz / d : Math.sin((i + j) * 1.3);
+      const step = Math.min(0.28, (MIN_SEP - d) * Math.min(1, dt * 6));
+      if (aMov && bMov) {
+        a.x -= nx * (step * 0.5);
+        a.z -= nz * (step * 0.5);
+        b.x += nx * (step * 0.5);
+        b.z += nz * (step * 0.5);
+      } else if (aMov) {
+        a.x -= nx * step;
+        a.z -= nz * step;
+      } else {
+        b.x += nx * step;
+        b.z += nz * step;
+      }
+    }
+  }
+
   return ev;
 }
 
